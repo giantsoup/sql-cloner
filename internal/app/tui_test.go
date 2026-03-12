@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/taylor/dbgold/internal/core"
@@ -91,6 +93,81 @@ func TestResponsiveLayoutKeepsSidebarOnWideViewport(t *testing.T) {
 	}
 	if layout.mainWidth+layout.sidebarWidth+1 > layout.contentWidth {
 		t.Fatalf("layout columns overflowed content width: main=%d sidebar=%d content=%d", layout.mainWidth, layout.sidebarWidth, layout.contentWidth)
+	}
+}
+
+func TestOnboardingConnectionGuidanceForReachableMySQL(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenOnboarding})
+	m.doctor.MySQLReachable = true
+
+	msg := m.onboardingConnectionGuidance()
+	if !strings.Contains(msg, "save and continue") {
+		t.Fatalf("expected setup guidance to explain the next step, got %q", msg)
+	}
+}
+
+func TestOnboardingConnectionGuidanceForConnectionFailure(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenOnboarding})
+	m.lastErr = errors.New("mysql --host=127.0.0.1 ...\nexit status 1")
+
+	msg := m.onboardingConnectionGuidance()
+	if !strings.Contains(msg, "before saving") {
+		t.Fatalf("expected setup guidance to explain what to fix, got %q", msg)
+	}
+}
+
+func TestSummarizeErrorBrieflyReturnsExitStatus(t *testing.T) {
+	err := errors.New("mysql --host=127.0.0.1 ...\nexit status 1")
+
+	msg := summarizeErrorBriefly(err)
+	if msg != "exit status 1." {
+		t.Fatalf("unexpected summarized error %q", msg)
+	}
+}
+
+func TestSummarizeErrorBrieflyReturnsInlineExitStatus(t *testing.T) {
+	err := errors.New("mysql --host=127.0.0.1 ... exit status 1")
+
+	msg := summarizeErrorBriefly(err)
+	if msg != "exit status 1." {
+		t.Fatalf("unexpected summarized error %q", msg)
+	}
+}
+
+func TestRenderSettingsUsesOnboardingScreenState(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenOnboarding})
+	m.screen = screenOnboarding
+	m.onboarding = false
+	m.width = 120
+	m.height = 30
+	m.resize()
+
+	view := m.renderSettings(m.layout())
+	if !strings.Contains(view, "Finish Setup") {
+		t.Fatalf("expected onboarding title in setup screen, got %q", view)
+	}
+}
+
+func TestNewModelPreparesOnboardingForm(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenOnboarding})
+
+	if m.settingsForm == nil {
+		t.Fatal("expected onboarding form to be prepared in the initial model")
+	}
+	if m.screen != screenOnboarding {
+		t.Fatalf("expected onboarding screen, got %s", m.screen)
+	}
+}
+
+func TestOnboardingRenderShowsInputFields(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenOnboarding})
+	m.width = 140
+	m.height = 40
+	m.resize()
+
+	view := m.renderSettings(m.layout())
+	if !strings.Contains(view, "Snapshot folder") {
+		t.Fatalf("expected onboarding form to render input fields, got %q", view)
 	}
 }
 

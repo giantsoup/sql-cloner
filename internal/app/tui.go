@@ -233,7 +233,7 @@ func newModel(ctx context.Context, svc *core.Service, opts launchOptions) model 
 
 	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 
-	return model{
+	m := model{
 		ctx:           ctx,
 		service:       svc,
 		screen:        opts.mode,
@@ -248,16 +248,24 @@ func newModel(ctx context.Context, svc *core.Service, opts launchOptions) model 
 		initialQuery:  opts.initialQuery,
 		initialYes:    opts.yes,
 	}
+
+	if opts.initialQuery != "" {
+		m.filter.SetValue(opts.initialQuery)
+	}
+	if opts.mode == screenSettings || opts.mode == screenOnboarding {
+		m.openSettings(opts.mode == screenOnboarding)
+	}
+
+	return m
 }
 
 func (m model) Init() tea.Cmd {
-	if m.initialQuery != "" {
-		m.filter.SetValue(m.initialQuery)
+	var cmds []tea.Cmd
+	if m.settingsForm != nil {
+		cmds = append(cmds, m.settingsForm.Init())
 	}
-	if m.screen == screenSettings || m.screen == screenOnboarding {
-		m.openSettings(m.screen == screenOnboarding)
-	}
-	return tea.Batch(loadDashboardCmd(m.ctx, m.service), spinTickCmd(m.spin))
+	cmds = append(cmds, loadDashboardCmd(m.ctx, m.service), spinTickCmd(m.spin))
+	return tea.Batch(cmds...)
 }
 
 func loadDashboardCmd(ctx context.Context, svc *core.Service) tea.Cmd {
@@ -301,12 +309,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 	case dashboardLoadedMsg:
 		m.lastErr = msg.err
-		if msg.err == nil {
-			m.doctor = msg.doctor
-			m.dbs = msg.dbs
-			m.snapshots = msg.snapshots
-			m.syncTables()
-		}
+		m.doctor = msg.doctor
+		m.dbs = msg.dbs
+		m.snapshots = msg.snapshots
+		m.syncTables()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
@@ -386,11 +392,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case screenRunning:
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && key.Matches(keyMsg, m.keys.Cancel) {
 			if m.cancelJob != nil {
-				m.openConfirm(confirmState{
+				cmds = append(cmds, m.openConfirm(confirmState{
 					reason:      "Cancel this job?",
 					description: "The current mysqlsh operation will stop after you confirm.",
 					cancelRun:   true,
-				})
+				}))
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -437,7 +443,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Doctor) && m.screen == screenDashboard:
 			m.screen = screenDoctor
 		case key.Matches(keyMsg, m.keys.Settings) && m.screen == screenDashboard:
-			m.openSettings(false)
+			cmds = append(cmds, m.openSettings(false))
 		case key.Matches(keyMsg, m.keys.Enter):
 			return m.handleEnter()
 		}
@@ -508,7 +514,7 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 		if m.initialYes {
 			return m.startJob(core.JobSnapshot, target, true)
 		}
-		m.openConfirm(confirmState{
+		return m, m.openConfirm(confirmState{
 			reason:      "Create a new snapshot?",
 			description: fmt.Sprintf("If this succeeds, the saved snapshot for %s will be replaced.", target),
 			action:      core.JobSnapshot,
@@ -520,7 +526,7 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		target := row[0]
-		m.openConfirm(confirmState{
+		return m, m.openConfirm(confirmState{
 			reason:      "Restore this snapshot?",
 			description: fmt.Sprintf("The local database %s will be dropped, recreated, and loaded from disk.", target),
 			action:      core.JobRestore,
@@ -536,7 +542,7 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) openConfirm(state confirmState) {
+func (m *model) openConfirm(state confirmState) tea.Cmd {
 	m.confirmState = state
 	m.confirmValue = false
 	confirm := huh.NewConfirm().
@@ -558,9 +564,10 @@ func (m *model) openConfirm(state confirmState) {
 	form.WithTheme(huh.ThemeFunc(huh.ThemeCharm))
 	m.confirm = form
 	m.screen = screenConfirm
+	return m.confirm.Init()
 }
 
-func (m *model) openSettings(onboarding bool) {
+func (m *model) openSettings(onboarding bool) tea.Cmd {
 	m.onboarding = onboarding
 	cfg := m.service.Config()
 	m.settingsDraft = settingsValues{
@@ -586,49 +593,46 @@ func (m *model) openSettings(onboarding bool) {
 		MySQLAutoEnableLocalInfile: cfg.MySQLAutoEnableLocalInfile,
 	}
 
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewNote().
-				Title(func() string {
-					if onboarding {
-						return "Welcome to dbgold"
-					}
-					return "Settings"
-				}()).
-				Description(func() string {
-					if onboarding {
-						return "These defaults come from the legacy scripts. Review them, change anything your machine needs, then save to continue."
-					}
-					return "Update the saved defaults for this machine. Environment variables still override them at runtime."
-				}()),
-		).Title("Overview"),
-		huh.NewGroup(
-			huh.NewInput().Key("snapshot_root").Title("Snapshot folder").Value(&m.settingsDraft.SnapshotRoot).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("log_root").Title("Log folder").Value(&m.settingsDraft.LogRoot).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysqlsh_state_home").Title("MySQL Shell state folder").Value(&m.settingsDraft.MySQLSHStateHome).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysql_service").Title("Homebrew service name").Value(&m.settingsDraft.MySQLService).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysql_start_timeout").Title("Start timeout (seconds)").Value(&m.settingsDraft.MySQLStartTimeout).Validate(validatePositiveInt),
-			huh.NewInput().Key("mysql_heartbeat_interval").Title("Heartbeat interval (seconds)").Value(&m.settingsDraft.MySQLHeartbeatInterval).Validate(validatePositiveInt),
-		).Title("Storage and service"),
-		huh.NewGroup(
-			huh.NewInput().Key("mysql_uri").Title("MySQL Shell URI").Description("Optional. Leave blank to use host, user, and socket settings instead.").Value(&m.settingsDraft.MySQLURI),
-			huh.NewInput().Key("mysql_host").Title("MySQL host").Value(&m.settingsDraft.MySQLHost),
-			huh.NewInput().Key("mysql_port").Title("MySQL port").Value(&m.settingsDraft.MySQLPort).Validate(validatePositiveInt),
-			huh.NewInput().Key("mysql_socket").Title("MySQL socket").Value(&m.settingsDraft.MySQLSocket),
-			huh.NewInput().Key("mysql_user").Title("MySQL user").Value(&m.settingsDraft.MySQLUser).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysql_login_path").Title("MySQL login path").Value(&m.settingsDraft.MySQLLoginPath),
-			huh.NewInput().Key("mysql_password").Title("MySQL password").Password(true).Value(&m.settingsDraft.MySQLPassword),
-			huh.NewConfirm().Key("mysql_assume_empty_password").Title("Try an empty password when no login path or password is set?").Value(&m.settingsDraft.MySQLAssumeEmptyPassword),
-		).Title("Connection"),
-		huh.NewGroup(
-			huh.NewInput().Key("mysqlsh_threads").Title("MySQL Shell threads").Value(&m.settingsDraft.MySQLShellThreads).Validate(validatePositiveInt),
-			huh.NewInput().Key("mysqlsh_compression").Title("Compression").Value(&m.settingsDraft.MySQLCompression).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysqlsh_bytes_per_chunk").Title("Bytes per chunk").Description("Optional, for example 128M").Value(&m.settingsDraft.MySQLBytesPerChunk),
-			huh.NewInput().Key("mysqlsh_defer_table_indexes").Title("Deferred indexes").Value(&m.settingsDraft.MySQLDeferIndexes).Validate(huh.ValidateNotEmpty()),
-			huh.NewConfirm().Key("mysqlsh_skip_binlog").Title("Skip binlog on restore?").Value(&m.settingsDraft.MySQLSkipBinlog),
-			huh.NewConfirm().Key("mysqlsh_auto_enable_local_infile").Title("Temporarily enable local_infile when a restore needs it?").Value(&m.settingsDraft.MySQLAutoEnableLocalInfile),
-		).Title("Dump and restore"),
-	)
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Key("snapshot_root").
+			Title("Snapshot folder").
+			Description("Storage and service defaults start here. Choose where snapshots live on this machine.").
+			Value(&m.settingsDraft.SnapshotRoot).
+			Validate(huh.ValidateNotEmpty()),
+		huh.NewInput().Key("log_root").Title("Log folder").Value(&m.settingsDraft.LogRoot).Validate(huh.ValidateNotEmpty()),
+		huh.NewInput().Key("mysqlsh_state_home").Title("MySQL Shell state folder").Value(&m.settingsDraft.MySQLSHStateHome).Validate(huh.ValidateNotEmpty()),
+		huh.NewInput().Key("mysql_service").Title("Homebrew service name").Value(&m.settingsDraft.MySQLService).Validate(huh.ValidateNotEmpty()),
+		huh.NewInput().Key("mysql_start_timeout").Title("Start timeout (seconds)").Value(&m.settingsDraft.MySQLStartTimeout).Validate(validatePositiveInt),
+		huh.NewInput().Key("mysql_heartbeat_interval").Title("Heartbeat interval (seconds)").Value(&m.settingsDraft.MySQLHeartbeatInterval).Validate(validatePositiveInt),
+		huh.NewInput().
+			Key("mysql_uri").
+			Title("MySQL Shell URI").
+			Description("Connection settings start here. Optional. Leave blank to use host, user, and socket settings instead.").
+			Value(&m.settingsDraft.MySQLURI),
+		huh.NewInput().Key("mysql_host").Title("MySQL host").Value(&m.settingsDraft.MySQLHost),
+		huh.NewInput().Key("mysql_port").Title("MySQL port").Value(&m.settingsDraft.MySQLPort).Validate(validatePositiveInt),
+		huh.NewInput().Key("mysql_socket").Title("MySQL socket").Value(&m.settingsDraft.MySQLSocket),
+		huh.NewInput().Key("mysql_user").Title("MySQL user").Value(&m.settingsDraft.MySQLUser).Validate(huh.ValidateNotEmpty()),
+		huh.NewInput().Key("mysql_login_path").Title("MySQL login path").Value(&m.settingsDraft.MySQLLoginPath),
+		huh.NewInput().Key("mysql_password").Title("MySQL password").Password(true).Value(&m.settingsDraft.MySQLPassword),
+		huh.NewConfirm().Key("mysql_assume_empty_password").Title("Try an empty password when no login path or password is set?").Value(&m.settingsDraft.MySQLAssumeEmptyPassword),
+		huh.NewInput().
+			Key("mysqlsh_threads").
+			Title("MySQL Shell threads").
+			Description("Dump and restore defaults start here. These settings control mysqlsh snapshot and restore behavior.").
+			Value(&m.settingsDraft.MySQLShellThreads).
+			Validate(validatePositiveInt),
+		huh.NewInput().Key("mysqlsh_compression").Title("Compression").Value(&m.settingsDraft.MySQLCompression).Validate(huh.ValidateNotEmpty()),
+		huh.NewInput().Key("mysqlsh_bytes_per_chunk").Title("Bytes per chunk").Description("Optional, for example 128M").Value(&m.settingsDraft.MySQLBytesPerChunk),
+		huh.NewInput().Key("mysqlsh_defer_table_indexes").Title("Deferred indexes").Value(&m.settingsDraft.MySQLDeferIndexes).Validate(huh.ValidateNotEmpty()),
+		huh.NewConfirm().Key("mysqlsh_skip_binlog").Title("Skip binlog on restore?").Value(&m.settingsDraft.MySQLSkipBinlog),
+		huh.NewConfirm().
+			Key("mysqlsh_auto_enable_local_infile").
+			Title("Temporarily enable local_infile when a restore needs it?").
+			Description("Last setting. Press enter once more after this field to save and continue.").
+			Value(&m.settingsDraft.MySQLAutoEnableLocalInfile),
+	))
 	form.SubmitCmd = func() tea.Msg { return settingsSubmitMsg{} }
 	form.CancelCmd = func() tea.Msg {
 		return settingsSavedMsg{cfg: m.service.Config()}
@@ -641,6 +645,7 @@ func (m *model) openSettings(onboarding bool) {
 	} else {
 		m.screen = screenSettings
 	}
+	return m.settingsForm.Init()
 }
 
 func (m model) handleSettingsSubmit() (tea.Model, tea.Cmd) {
@@ -684,14 +689,13 @@ func (m model) handleConfirmDone(msg confirmDoneMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if !state.startMySQL && !m.initialYes && !m.doctor.MySQLReachable {
-		m.openConfirm(confirmState{
+		return m, m.openConfirm(confirmState{
 			reason:      "Start local MySQL first?",
 			description: fmt.Sprintf("%s is not reachable right now. Start %s with Homebrew before continuing?", m.service.Config().MySQLSocket, m.service.Config().MySQLService),
 			action:      state.action,
 			target:      state.target,
 			startMySQL:  true,
 		})
-		return m, nil
 	}
 
 	return m.startJob(state.action, state.target, state.startMySQL || m.initialYes)
@@ -847,7 +851,6 @@ func (m model) View() tea.View {
 func (m model) render() string {
 	layout := m.layout()
 	status := m.renderStatus(layout)
-	helpView := m.help.View(m.keys)
 	center := m.renderCenter(layout)
 	details := m.renderDetails(layout)
 
@@ -866,7 +869,7 @@ func (m model) render() string {
 		)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, status, body, m.styles.helpBar.Copy().Width(layout.contentWidth).Render(helpView))
+	return lipgloss.JoinVertical(lipgloss.Left, status, body, m.renderFooter(layout))
 }
 
 func (m model) renderStatus(layout layoutSpec) string {
@@ -971,6 +974,17 @@ func (m model) renderDashboard(layout layoutSpec) string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, summary, lead, body)
+}
+
+func (m model) renderFooter(layout layoutSpec) string {
+	helpView := m.help.View(m.keys)
+	switch m.screen {
+	case screenOnboarding:
+		helpView = "Type to edit. Enter or tab moves forward. Shift+tab moves back. Left/right or y/n changes Yes/No. Press enter on the last field to save."
+	case screenSettings:
+		helpView = "Type to edit. Enter or tab moves forward. Shift+tab moves back. Left/right or y/n changes Yes/No. Press enter on the last field to save."
+	}
+	return m.styles.helpBar.Copy().Width(layout.contentWidth).Render(helpView)
 }
 
 func (m model) renderPicker(layout layoutSpec, title, subtitle, filterView, tableView string) string {
@@ -1079,20 +1093,21 @@ func (m model) renderDoctor(layout layoutSpec) string {
 }
 
 func (m model) renderSettings(layout layoutSpec) string {
+	onboarding := m.onboarding || m.screen == screenOnboarding
 	title := "Settings"
 	subtitle := "These saved values fill in the app the next time it starts. Environment variables can still override them."
 	badges := []string{
-		m.styles.badgeStrong.Render("saved config"),
-		m.styles.badge.Render("env vars still win"),
+		m.styles.badgeStrong.Render("saved defaults"),
+		m.styles.badge.Render("used on next launch"),
+		m.styles.badge.Render("env vars override"),
 	}
-	if m.onboarding {
-		title = "First-Run Setup"
-		subtitle = "Review the defaults, adjust anything your machine needs, then save to enter the dashboard."
+	if onboarding {
+		title = "Finish Setup"
+		subtitle = "This is the only required step. If these defaults already match this machine, save once to continue. Change only the fields that differ."
 		badges = []string{
-			m.styles.badgeStrong.Render("onboarding"),
-			m.styles.badge.Render("review"),
-			m.styles.badge.Render("save"),
-			m.styles.badge.Render("continue"),
+			m.styles.badgeStrong.Render("required once"),
+			m.styles.badge.Render("save to continue"),
+			m.styles.badge.Render("edit if needed"),
 		}
 	}
 	lines := []string{
@@ -1185,17 +1200,23 @@ func (m model) renderDetails(layout layoutSpec) string {
 			m.renderValueBlock("Snapshot root", m.service.Config().SnapshotRoot, contentWidth, m.styles.code),
 		)
 	case screenOnboarding:
-		title = "Setup guide"
+		title = "What To Do"
 		blocks = append(blocks,
 			m.renderValueBlock("Config file", m.service.Config().ConfigPath, contentWidth, m.styles.code),
-			m.renderBulletBlock("Next steps", []string{
-				"Review the defaults",
-				"Save settings",
-				"Use the dashboard",
+			m.renderBulletBlock("Required now", []string{
+				"Review the setup form.",
+				"If the defaults already match this machine, leave them as-is.",
+				"Save at the bottom to finish setup and open the dashboard.",
 			}, contentWidth),
+			m.renderBulletBlock("Only change fields if needed", []string{
+				"MySQL host, socket, user, password, or login path are different on this machine.",
+				"The Homebrew MySQL service name is different.",
+				"You keep snapshots or logs in a different folder.",
+			}, contentWidth),
+			m.renderValueBlock("Connection check", m.onboardingConnectionGuidance(), contentWidth, m.styles.value),
 		)
 	}
-	if m.lastErr != nil && m.screen != screenResult {
+	if m.lastErr != nil && m.screen != screenResult && m.screen != screenOnboarding {
 		blocks = append(blocks, m.renderValueBlock("Latest error", m.lastErr.Error(), contentWidth, m.styles.error))
 	}
 	if len(blocks) == 0 {
@@ -1471,6 +1492,47 @@ func orderedSummary(summary map[string]string) []string {
 		lines = append(lines, summary[key])
 	}
 	return lines
+}
+
+func (m model) onboardingConnectionGuidance() string {
+	switch {
+	case m.lastErr == nil && m.doctor.MySQLReachable:
+		return "MySQL responded with the current settings. If the folders also look right, save and continue."
+	case m.lastErr == nil:
+		return "dbgold has not confirmed the current connection yet. If this machine should already reach MySQL, review the connection fields before saving."
+	case !m.doctor.MySQLReachable:
+		return "MySQL is not reachable with the current settings yet. If that is unexpected, check the host, socket, service, user, login path, or password before saving."
+	default:
+		return fmt.Sprintf("dbgold could not finish a MySQL check with the current values. %s", summarizeErrorBriefly(m.lastErr))
+	}
+}
+
+func summarizeErrorBriefly(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(msg, "exit status "); idx >= 0 {
+		return strings.TrimSpace(msg[idx:]) + "."
+	}
+	lines := strings.FieldsFunc(msg, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	if len(lines) == 0 {
+		return msg
+	}
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if strings.HasPrefix(last, "exit status") {
+		return last + "."
+	}
+	first := strings.TrimSpace(lines[0])
+	if first == "" {
+		return msg
+	}
+	return first
 }
 
 func blankFallback(value, fallback string) string {
