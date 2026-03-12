@@ -2,14 +2,14 @@
 
 `dbgold` is a Go TUI for creating and restoring local MySQL "golden" snapshots with MySQL Shell.
 
-It is designed as a friendlier replacement for the legacy `mysql-db-snapshot` and `mysql-db-restore` scripts while staying compatible with their snapshot layout, metadata, logs, and environment-variable behavior.
+It is designed as a friendlier replacement for the common `mysqldump` plus "replay a SQL script" local workflow, while usually being much faster for larger development databases.
 
 ## Features
 
 - Full-screen keyboard-driven TUI built with Bubble Tea, Bubbles, Huh, and Lip Gloss
 - First-run onboarding flow for users who are not comfortable with CLI setup
 - Persistent app settings with sensible defaults seeded from the legacy shell scripts
-- Compatibility with existing snapshots under `/opt/homebrew/var/db_snapshots/mysqlsh`
+- Compatibility with existing MySQL Shell snapshot directories under `/opt/homebrew/var/db_snapshots/mysqlsh`
 - Snapshot safety: dumps are written to a temp directory and only swapped in after success
 - Restore safety: snapshots are validated before any database drop happens
 - Automatic `local_infile` handling during restore when enabled in settings
@@ -146,7 +146,7 @@ That means the app is beginner-friendly by default, but still works well in cust
 
 ### Supported Environment Variables
 
-Compatibility-focused variables from the legacy scripts:
+Supported runtime variables:
 
 ```text
 MYSQL_SNAPSHOT_ROOT
@@ -180,15 +180,6 @@ DBGOLD_YES
 DBGOLD_NO_TUI
 DBGOLD_DEBUG
 ```
-
-Legacy alias variables are also accepted where they already existed in the repo during migration.
-
-## Compatibility with Legacy Scripts
-
-`dbgold` is intended to work with snapshots created by:
-
-- `/Users/Taylor/scripts/mysql-db-snapshot`
-- `/Users/Taylor/scripts/mysql-db-restore`
 
 It reuses:
 
@@ -251,6 +242,18 @@ Use a different settings file:
 ```bash
 DBGOLD_CONFIG_PATH=./dbgold.settings.json dbgold
 ```
+
+## Why Use It
+
+For small databases, `mysqldump` and SQL restore scripts can be good enough.
+
+For larger local-development databases, that pattern tends to get slow because:
+
+- plain SQL dumps are larger and slower to import
+- restore time grows noticeably as data volume grows
+- repeated drop-and-rebuild cycles become disruptive during normal development
+
+`dbgold` uses MySQL Shell dump and load operations instead, which are typically much faster for larger local datasets and make snapshot/restore workflows more practical during day-to-day development.
 
 ## Troubleshooting
 
