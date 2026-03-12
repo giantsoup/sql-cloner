@@ -64,16 +64,16 @@ func defaultKeys() keyMap {
 	return keyMap{
 		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "move")),
 		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "move")),
-		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
-		Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
+		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "find")),
+		Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
 		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reload")),
 		Snap:     key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "snapshot")),
 		Restore:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restore")),
 		Doctor:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "doctor")),
 		Settings: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "settings")),
 		Quit:     key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
-		Cancel:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel job")),
+		Cancel:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "cancel")),
 	}
 }
 
@@ -198,6 +198,16 @@ type model struct {
 	dashboardFocus int
 }
 
+type layoutSpec struct {
+	contentWidth       int
+	mainWidth          int
+	sidebarWidth       int
+	stackSidebar       bool
+	stackDashboard     bool
+	dashboardPanelWide int
+	bodyHeight         int
+}
+
 func runTUI(ctx context.Context, svc *core.Service, opts launchOptions) error {
 	m := newModel(ctx, svc, opts)
 	p := tea.NewProgram(m)
@@ -209,19 +219,19 @@ func runTUI(ctx context.Context, svc *core.Service, opts launchOptions) error {
 }
 
 func newModel(ctx context.Context, svc *core.Service, opts launchOptions) model {
-	filter := textinput.New()
-	filter.Prompt = "filter> "
-	filter.Placeholder = "type to narrow"
+	styles := newStyles()
 
-	dbTable := newDBTable()
-	snapshotTable := newSnapshotTable()
+	filter := textinput.New()
+	filter.Prompt = "find> "
+	filter.Placeholder = "Type to narrow the list"
+
+	dbTable := newDBTable(styles)
+	snapshotTable := newSnapshotTable(styles)
 	logViewport := viewport.New()
 	logViewport.SoftWrap = true
 	logViewport.FillHeight = true
 
 	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
-
-	styles := newStyles()
 
 	return model{
 		ctx:           ctx,
@@ -377,8 +387,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && key.Matches(keyMsg, m.keys.Cancel) {
 			if m.cancelJob != nil {
 				m.openConfirm(confirmState{
-					reason:      "Cancel running job?",
-					description: "The current mysqlsh work will be interrupted after confirmation.",
+					reason:      "Cancel this job?",
+					description: "The current mysqlsh operation will stop after you confirm.",
 					cancelRun:   true,
 				})
 			}
@@ -499,8 +509,8 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 			return m.startJob(core.JobSnapshot, target, true)
 		}
 		m.openConfirm(confirmState{
-			reason:      "Create snapshot?",
-			description: fmt.Sprintf("A successful dump will replace the existing snapshot for %s.", target),
+			reason:      "Create a new snapshot?",
+			description: fmt.Sprintf("If this succeeds, the saved snapshot for %s will be replaced.", target),
 			action:      core.JobSnapshot,
 			target:      target,
 		})
@@ -511,8 +521,8 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 		}
 		target := row[0]
 		m.openConfirm(confirmState{
-			reason:      "Restore snapshot?",
-			description: fmt.Sprintf("The local database %s will be dropped and recreated before load.", target),
+			reason:      "Restore this snapshot?",
+			description: fmt.Sprintf("The local database %s will be dropped, recreated, and loaded from disk.", target),
 			action:      core.JobRestore,
 			target:      target,
 		})
@@ -587,36 +597,36 @@ func (m *model) openSettings(onboarding bool) {
 				}()).
 				Description(func() string {
 					if onboarding {
-						return "This quick setup uses the legacy shell-script defaults as starting values. Review them, adjust anything your environment needs, and press Enter through the form to save."
+						return "These defaults come from the legacy scripts. Review them, change anything your machine needs, then save to continue."
 					}
-					return "Update saved settings for this machine. Environment variables still override these values at runtime."
+					return "Update the saved defaults for this machine. Environment variables still override them at runtime."
 				}()),
 		).Title("Overview"),
 		huh.NewGroup(
-			huh.NewInput().Key("snapshot_root").Title("Snapshot root").Value(&m.settingsDraft.SnapshotRoot).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("log_root").Title("Log root").Value(&m.settingsDraft.LogRoot).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysqlsh_state_home").Title("MySQL Shell state home").Value(&m.settingsDraft.MySQLSHStateHome).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysql_service").Title("MySQL service").Value(&m.settingsDraft.MySQLService).Validate(huh.ValidateNotEmpty()),
+			huh.NewInput().Key("snapshot_root").Title("Snapshot folder").Value(&m.settingsDraft.SnapshotRoot).Validate(huh.ValidateNotEmpty()),
+			huh.NewInput().Key("log_root").Title("Log folder").Value(&m.settingsDraft.LogRoot).Validate(huh.ValidateNotEmpty()),
+			huh.NewInput().Key("mysqlsh_state_home").Title("MySQL Shell state folder").Value(&m.settingsDraft.MySQLSHStateHome).Validate(huh.ValidateNotEmpty()),
+			huh.NewInput().Key("mysql_service").Title("Homebrew service name").Value(&m.settingsDraft.MySQLService).Validate(huh.ValidateNotEmpty()),
 			huh.NewInput().Key("mysql_start_timeout").Title("Start timeout (seconds)").Value(&m.settingsDraft.MySQLStartTimeout).Validate(validatePositiveInt),
 			huh.NewInput().Key("mysql_heartbeat_interval").Title("Heartbeat interval (seconds)").Value(&m.settingsDraft.MySQLHeartbeatInterval).Validate(validatePositiveInt),
-		).Title("Paths and service"),
+		).Title("Storage and service"),
 		huh.NewGroup(
-			huh.NewInput().Key("mysql_uri").Title("MySQL Shell URI").Description("Optional. Leave blank to use host/user/socket fields.").Value(&m.settingsDraft.MySQLURI),
+			huh.NewInput().Key("mysql_uri").Title("MySQL Shell URI").Description("Optional. Leave blank to use host, user, and socket settings instead.").Value(&m.settingsDraft.MySQLURI),
 			huh.NewInput().Key("mysql_host").Title("MySQL host").Value(&m.settingsDraft.MySQLHost),
 			huh.NewInput().Key("mysql_port").Title("MySQL port").Value(&m.settingsDraft.MySQLPort).Validate(validatePositiveInt),
 			huh.NewInput().Key("mysql_socket").Title("MySQL socket").Value(&m.settingsDraft.MySQLSocket),
 			huh.NewInput().Key("mysql_user").Title("MySQL user").Value(&m.settingsDraft.MySQLUser).Validate(huh.ValidateNotEmpty()),
 			huh.NewInput().Key("mysql_login_path").Title("MySQL login path").Value(&m.settingsDraft.MySQLLoginPath),
 			huh.NewInput().Key("mysql_password").Title("MySQL password").Password(true).Value(&m.settingsDraft.MySQLPassword),
-			huh.NewConfirm().Key("mysql_assume_empty_password").Title("Assume empty password when no login-path or password is configured?").Value(&m.settingsDraft.MySQLAssumeEmptyPassword),
+			huh.NewConfirm().Key("mysql_assume_empty_password").Title("Try an empty password when no login path or password is set?").Value(&m.settingsDraft.MySQLAssumeEmptyPassword),
 		).Title("Connection"),
 		huh.NewGroup(
 			huh.NewInput().Key("mysqlsh_threads").Title("MySQL Shell threads").Value(&m.settingsDraft.MySQLShellThreads).Validate(validatePositiveInt),
-			huh.NewInput().Key("mysqlsh_compression").Title("Dump compression").Value(&m.settingsDraft.MySQLCompression).Validate(huh.ValidateNotEmpty()),
-			huh.NewInput().Key("mysqlsh_bytes_per_chunk").Title("Bytes per chunk").Description("Optional, e.g. 128M").Value(&m.settingsDraft.MySQLBytesPerChunk),
-			huh.NewInput().Key("mysqlsh_defer_table_indexes").Title("Defer table indexes").Value(&m.settingsDraft.MySQLDeferIndexes).Validate(huh.ValidateNotEmpty()),
+			huh.NewInput().Key("mysqlsh_compression").Title("Compression").Value(&m.settingsDraft.MySQLCompression).Validate(huh.ValidateNotEmpty()),
+			huh.NewInput().Key("mysqlsh_bytes_per_chunk").Title("Bytes per chunk").Description("Optional, for example 128M").Value(&m.settingsDraft.MySQLBytesPerChunk),
+			huh.NewInput().Key("mysqlsh_defer_table_indexes").Title("Deferred indexes").Value(&m.settingsDraft.MySQLDeferIndexes).Validate(huh.ValidateNotEmpty()),
 			huh.NewConfirm().Key("mysqlsh_skip_binlog").Title("Skip binlog on restore?").Value(&m.settingsDraft.MySQLSkipBinlog),
-			huh.NewConfirm().Key("mysqlsh_auto_enable_local_infile").Title("Auto-enable local_infile when needed?").Value(&m.settingsDraft.MySQLAutoEnableLocalInfile),
+			huh.NewConfirm().Key("mysqlsh_auto_enable_local_infile").Title("Temporarily enable local_infile when a restore needs it?").Value(&m.settingsDraft.MySQLAutoEnableLocalInfile),
 		).Title("Dump and restore"),
 	)
 	form.SubmitCmd = func() tea.Msg { return settingsSubmitMsg{} }
@@ -675,8 +685,8 @@ func (m model) handleConfirmDone(msg confirmDoneMsg) (tea.Model, tea.Cmd) {
 
 	if !state.startMySQL && !m.initialYes && !m.doctor.MySQLReachable {
 		m.openConfirm(confirmState{
-			reason:      "Start local MySQL?",
-			description: fmt.Sprintf("%s is not reachable. Start %s with Homebrew first?", m.service.Config().MySQLSocket, m.service.Config().MySQLService),
+			reason:      "Start local MySQL first?",
+			description: fmt.Sprintf("%s is not reachable right now. Start %s with Homebrew before continuing?", m.service.Config().MySQLSocket, m.service.Config().MySQLService),
 			action:      state.action,
 			target:      state.target,
 			startMySQL:  true,
@@ -731,21 +741,36 @@ func (m model) startJob(kind core.JobKind, target string, approveStart bool) (te
 }
 
 func (m *model) resize() {
-	if m.width == 0 || m.height == 0 {
-		return
-	}
-	m.help.SetWidth(m.width)
+	layout := m.layout()
+	m.help.SetWidth(layout.contentWidth)
 
-	centerWidth := max(40, m.width-36)
-	tableWidth := max(20, centerWidth-4)
-	tableHeight := max(8, m.height-12)
-	m.dbTable.SetWidth(tableWidth)
+	tableWidth := m.panelInnerWidth(layout.mainWidth)
+	if tableWidth < 8 {
+		tableWidth = 8
+	}
+	tableHeight := max(8, layout.bodyHeight-8)
+
+	applyDBTableLayout(&m.dbTable, tableWidth)
 	m.dbTable.SetHeight(tableHeight)
-	m.snapshotTable.SetWidth(tableWidth)
+
+	applySnapshotTableLayout(&m.snapshotTable, tableWidth)
 	m.snapshotTable.SetHeight(tableHeight)
-	m.filter.SetWidth(max(20, tableWidth-10))
+
+	filterWidth := tableWidth - 10
+	if filterWidth < 8 {
+		filterWidth = tableWidth
+	}
+	m.filter.SetWidth(filterWidth)
 	m.logViewport.SetWidth(tableWidth)
 	m.logViewport.SetHeight(tableHeight)
+	if m.confirm != nil {
+		m.confirm.WithWidth(clamp(layout.mainWidth-8, 1, min(72, layout.mainWidth)))
+		m.confirm.WithHeight(max(8, layout.bodyHeight-10))
+	}
+	if m.settingsForm != nil {
+		m.settingsForm.WithWidth(m.panelInnerWidth(layout.mainWidth))
+		m.settingsForm.WithHeight(max(12, layout.bodyHeight-6))
+	}
 }
 
 func (m *model) syncTables() {
@@ -820,161 +845,311 @@ func (m model) View() tea.View {
 }
 
 func (m model) render() string {
-	status := m.renderStatus()
+	layout := m.layout()
+	status := m.renderStatus(layout)
 	helpView := m.help.View(m.keys)
-	center := m.renderCenter()
-	details := m.renderDetails()
-	body := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.center.Render(center), m.styles.sidebar.Render(details))
-	return lipgloss.JoinVertical(lipgloss.Left, status, body, m.styles.helpBar.Render(helpView))
+	center := m.renderCenter(layout)
+	details := m.renderDetails(layout)
+
+	var body string
+	if layout.stackSidebar {
+		body = lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.styles.center.Copy().Width(layout.mainWidth).MarginRight(0).Render(center),
+			m.styles.sidebar.Copy().Width(layout.mainWidth).Render(details),
+		)
+	} else {
+		body = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.styles.center.Copy().Width(layout.mainWidth).Render(center),
+			m.styles.sidebar.Copy().Width(layout.sidebarWidth).Render(details),
+		)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, status, body, m.styles.helpBar.Copy().Width(layout.contentWidth).Render(helpView))
 }
 
-func (m model) renderStatus() string {
-	mysqlState := "down"
+func (m model) renderStatus(layout layoutSpec) string {
+	mysqlState := "offline"
 	if m.doctor.MySQLReachable {
-		mysqlState = "up"
+		mysqlState = "online"
 	}
-	mode := string(m.screen)
-	left := fmt.Sprintf(" mysql %s ", mysqlState)
-	middle := fmt.Sprintf(" %s ", m.service.SnapshotRoot())
-	right := fmt.Sprintf(" %s ", mode)
+	left := m.styles.statusLeft.Render("mysql " + mysqlState)
+	right := m.styles.statusRight.Render(m.screenLabel())
+	middleWidth := max(10, layout.contentWidth-lipgloss.Width(left)-lipgloss.Width(right))
+	middle := m.styles.statusMiddle.Width(middleWidth).Render(truncateMiddle(m.service.SnapshotRoot(), max(8, middleWidth-2)))
 	bar := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.styles.statusLeft.Render(left),
-		m.styles.statusMiddle.Width(max(0, m.width-lipgloss.Width(left)-lipgloss.Width(right))).Render(middle),
-		m.styles.statusRight.Render(right),
+		left,
+		middle,
+		right,
 	)
 	return bar
 }
 
-func (m model) renderCenter() string {
+func (m model) renderCenter(layout layoutSpec) string {
 	switch m.screen {
 	case screenDashboard:
-		return m.renderDashboard()
+		return m.renderDashboard(layout)
 	case screenSnapshotPicker:
-		return m.renderPicker("Snapshot picker", "Choose a live database to snapshot.", m.filter.View(), m.dbTable.View())
+		return m.renderPicker(layout, "Create snapshot", "Choose a live database to capture.", m.filter.View(), m.dbTable.View())
 	case screenRestorePicker:
-		return m.renderPicker("Restore picker", "Choose a snapshot to restore.", m.filter.View(), m.snapshotTable.View())
+		return m.renderPicker(layout, "Restore snapshot", "Choose a saved snapshot to load into local MySQL.", m.filter.View(), m.snapshotTable.View())
 	case screenConfirm:
 		if m.confirm == nil {
 			return ""
 		}
-		return m.styles.modal.Render(m.confirm.View())
+		modalWidth := clamp(layout.mainWidth-8, 1, min(72, layout.mainWidth))
+		modal := m.styles.modal.Copy().Width(modalWidth).Render(m.confirm.View())
+		return lipgloss.PlaceHorizontal(layout.mainWidth, lipgloss.Center, modal)
 	case screenRunning:
-		return m.renderRunning()
+		return m.renderRunning(layout)
 	case screenResult:
-		return m.renderResult()
+		return m.renderResult(layout)
 	case screenDoctor:
-		return m.renderDoctor()
+		return m.renderDoctor(layout)
 	case screenSettings:
-		return m.renderSettings()
+		return m.renderSettings(layout)
 	case screenOnboarding:
-		return m.renderSettings()
+		return m.renderSettings(layout)
 	default:
 		return ""
 	}
 }
 
-func (m model) renderDashboard() string {
-	title := m.styles.title.Render("Dashboard")
-	lead := m.styles.subtle.Render("Keyboard-first snapshot orchestration for local MySQL.")
+func (m model) renderDashboard(layout layoutSpec) string {
+	title := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		m.styles.title.Render("dbgold"),
+		" ",
+		m.styles.titleAccent.Render("Dashboard"),
+	)
+	lead := m.styles.subtle.Render("Fast local MySQL snapshots and restores, without shell scripts.")
 	if m.service.Config().NeedsOnboarding() {
-		lead = m.styles.error.Render("Setup is not saved yet. Press c to finish first-run configuration.")
+		lead = m.styles.error.Render("Setup is not saved yet. Press c to finish first-run setup.")
 	}
-	dbPanel := m.styles.panel.Render(lipgloss.JoinVertical(lipgloss.Left,
+	summary := m.renderBadgeRow(
+		m.styles.badgeStrong.Render(fmt.Sprintf("%d databases", len(m.dbs))),
+		m.styles.badge.Render(fmt.Sprintf("%d snapshots", len(m.snapshots))),
+		m.mysqlStatusBadge(),
+		m.styles.badge.Render("tab to switch"),
+	)
+
+	dbTable := m.dbTable
+	applyDBTableLayout(&dbTable, m.panelInnerWidth(layout.dashboardPanelWide))
+	dbTable.SetHeight(max(6, layout.bodyHeight-12))
+
+	snapshotTable := m.snapshotTable
+	applySnapshotTableLayout(&snapshotTable, m.panelInnerWidth(layout.dashboardPanelWide))
+	snapshotTable.SetHeight(max(6, layout.bodyHeight-12))
+
+	dbPanelStyle := m.styles.panel
+	snapshotPanelStyle := m.styles.panel
+	if m.dashboardFocus == 0 {
+		dbPanelStyle = m.styles.panelActive
+	} else {
+		snapshotPanelStyle = m.styles.panelActive
+	}
+
+	dbPanel := dbPanelStyle.Copy().Width(layout.dashboardPanelWide).Render(lipgloss.JoinVertical(
+		lipgloss.Left,
 		m.styles.panelTitle.Render("Live databases"),
-		m.dbTable.View(),
+		m.styles.subtle.Render("Choose a database to capture from your local MySQL instance."),
+		m.renderTableOrEmpty(dbTable.View(), len(dbTable.Rows()) == 0, "No databases found. Press r to reload or open doctor."),
 	))
-	snapshotPanel := m.styles.panel.Render(lipgloss.JoinVertical(lipgloss.Left,
+	snapshotPanel := snapshotPanelStyle.Copy().Width(layout.dashboardPanelWide).Render(lipgloss.JoinVertical(
+		lipgloss.Left,
 		m.styles.panelTitle.Render("Snapshots"),
-		m.snapshotTable.View(),
+		m.styles.subtle.Render("Choose a saved dump to restore into local MySQL."),
+		m.renderTableOrEmpty(snapshotTable.View(), len(snapshotTable.Rows()) == 0, "No snapshots yet. Press s to create the first one."),
 	))
-	return lipgloss.JoinVertical(lipgloss.Left, title, lead, lipgloss.JoinHorizontal(lipgloss.Top, dbPanel, snapshotPanel))
+
+	var body string
+	if layout.stackDashboard {
+		body = lipgloss.JoinVertical(lipgloss.Left, dbPanel, snapshotPanel)
+	} else {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, dbPanel, snapshotPanel)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, summary, lead, body)
 }
 
-func (m model) renderPicker(title, subtitle, filterView, tableView string) string {
-	return lipgloss.JoinVertical(lipgloss.Left,
+func (m model) renderPicker(layout layoutSpec, title, subtitle, filterView, tableView string) string {
+	filterValue := strings.TrimSpace(m.filter.Value())
+	count := len(m.dbTable.Rows())
+	emptyText := "No matching databases."
+	if m.screen == screenRestorePicker {
+		count = len(m.snapshotTable.Rows())
+		emptyText = "No matching snapshots."
+	}
+	badges := []string{
+		m.styles.badgeStrong.Render(fmt.Sprintf("%d shown", count)),
+		m.styles.badge.Render("enter to continue"),
+		m.styles.badge.Render("/ to filter"),
+	}
+	if filterValue != "" {
+		badges = append(badges, m.styles.badgeWarn.Render("filter: "+filterValue))
+	}
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
 		m.styles.title.Render(title),
+		m.renderBadgeRow(badges...),
 		m.styles.subtle.Render(subtitle),
 		m.styles.filter.Render(filterView),
-		m.styles.panel.Render(tableView),
+		m.styles.panel.Copy().Width(layout.mainWidth).Render(m.renderTableOrEmpty(tableView, count == 0, emptyText)),
 	)
 }
 
-func (m model) renderRunning() string {
-	title := fmt.Sprintf("%s %s", m.spin.View(), strings.Title(string(m.confirmState.action)))
+func (m model) renderRunning(layout layoutSpec) string {
+	title := fmt.Sprintf("%s %s", m.spin.View(), screenLabelForJob(m.confirmState.action))
 	if m.lastResult != nil {
-		title = fmt.Sprintf("%s %s", m.spin.View(), strings.Title(string(m.lastResult.Kind)))
+		title = fmt.Sprintf("%s %s", m.spin.View(), screenLabelForJob(m.lastResult.Kind))
 	}
 	elapsed := time.Since(m.jobStartedAt).Round(timeSecond)
+	metrics := m.renderBadgeRow(
+		m.styles.badgeStrong.Render(screenLabelForJob(m.confirmState.action)),
+		m.styles.badge.Render("target "+blankFallback(m.confirmState.target, "-")),
+		m.styles.badge.Render("elapsed "+elapsed.String()),
+		m.jobStatusBadge(),
+	)
 	header := lipgloss.JoinVertical(lipgloss.Left,
 		m.styles.title.Render(title),
-		m.styles.subtle.Render(fmt.Sprintf("target: %s | elapsed: %s", m.confirmState.target, elapsed)),
-		m.styles.statusLine.Render("status: "+blankFallback(m.jobStatus, "running")),
+		metrics,
+		m.styles.subtle.Render("Streaming mysqlsh output in real time."),
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, header, m.styles.panel.Render(m.logViewport.View()))
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		m.styles.panel.Copy().Width(layout.mainWidth).Render(lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.styles.panelTitle.Render("Job log"),
+			m.logViewport.View(),
+		)),
+	)
 }
 
-func (m model) renderResult() string {
+func (m model) renderResult(layout layoutSpec) string {
 	title := "Result"
+	statusBadge := m.styles.badgeOK.Render("completed")
 	if m.lastErr != nil {
 		title = "Error"
+		statusBadge = m.styles.badgeError.Render("failed")
 	}
-	lines := []string{m.styles.title.Render(title)}
+	lines := []string{
+		lipgloss.JoinHorizontal(lipgloss.Center, m.styles.title.Render(title), " ", statusBadge),
+	}
 	if m.lastErr != nil {
-		lines = append(lines, m.styles.error.Render(m.lastErr.Error()))
+		lines = append(lines, m.renderValueBlock("Latest error", m.lastErr.Error(), m.panelInnerWidth(layout.mainWidth), m.styles.error))
 	} else if m.lastResult != nil {
-		lines = append(lines, m.styles.success.Render(fmt.Sprintf("%s finished for %s in %s", strings.Title(string(m.lastResult.Kind)), m.lastResult.Target, m.lastResult.Duration.Round(timeSecond))))
-		lines = append(lines, m.styles.subtle.Render(m.lastResult.LogPath))
-		lines = append(lines, m.jobSummary...)
+		lines = append(lines, m.styles.success.Render(fmt.Sprintf("%s finished for %s in %s.", screenLabelForJob(m.lastResult.Kind), m.lastResult.Target, m.lastResult.Duration.Round(timeSecond))))
+		lines = append(lines, m.renderValueBlock("Log file", m.lastResult.LogPath, m.panelInnerWidth(layout.mainWidth), m.styles.code))
+		if len(m.jobSummary) > 0 {
+			lines = append(lines, m.renderBulletBlock("Summary", m.jobSummary, m.panelInnerWidth(layout.mainWidth)))
+		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return m.styles.panel.Copy().Width(layout.mainWidth).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
-func (m model) renderDoctor() string {
-	report := []string{
-		m.styles.title.Render("Doctor"),
-		fmt.Sprintf("MySQL reachable: %t", m.doctor.MySQLReachable),
-		fmt.Sprintf("MySQL service:   %s", m.doctor.MySQLService),
-		fmt.Sprintf("MySQL socket:    %s", m.doctor.MySQLSocket),
-		fmt.Sprintf("MySQL version:   %s", blankFallback(m.doctor.MySQLVersion, "-")),
-		fmt.Sprintf("Snapshot root:   %s", m.doctor.SnapshotRoot),
-		fmt.Sprintf("Log root:        %s", m.doctor.LogRoot),
+func (m model) renderDoctor(layout layoutSpec) string {
+	width := m.panelInnerWidth(layout.mainWidth)
+	blocks := []string{
+		lipgloss.JoinHorizontal(
+			lipgloss.Center,
+			m.styles.title.Render("Doctor"),
+			" ",
+			m.mysqlStatusBadge(),
+		),
+		m.renderBadgeRow(
+			m.styles.badge.Render(fmt.Sprintf("%d missing tools", len(m.doctor.MissingCommands))),
+			m.styles.badge.Render(fmt.Sprintf("%d warnings", len(m.doctor.Warnings))),
+		),
+		m.renderValueBlock("MySQL reachable", fmt.Sprintf("%t", m.doctor.MySQLReachable), width, m.styles.value),
+		m.renderValueBlock("MySQL service", blankFallback(m.doctor.MySQLService, "-"), width, m.styles.value),
+		m.renderValueBlock("MySQL socket", blankFallback(m.doctor.MySQLSocket, "-"), width, m.styles.code),
+		m.renderValueBlock("MySQL version", blankFallback(m.doctor.MySQLVersion, "-"), width, m.styles.value),
+		m.renderValueBlock("Snapshot root", blankFallback(m.doctor.SnapshotRoot, "-"), width, m.styles.code),
+		m.renderValueBlock("Log root", blankFallback(m.doctor.LogRoot, "-"), width, m.styles.code),
 	}
 	if len(m.doctor.MissingCommands) > 0 {
-		report = append(report, "Missing tools: "+strings.Join(m.doctor.MissingCommands, ", "))
+		blocks = append(blocks, m.renderBulletBlock("Missing tools", m.doctor.MissingCommands, width))
 	}
-	report = append(report, m.doctor.Warnings...)
-	return m.styles.panel.Render(strings.Join(report, "\n"))
+	if len(m.doctor.Warnings) > 0 {
+		blocks = append(blocks, m.renderBulletBlock("Warnings", m.doctor.Warnings, width))
+	}
+	return m.styles.panel.Copy().Width(layout.mainWidth).Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 }
 
-func (m model) renderSettings() string {
+func (m model) renderSettings(layout layoutSpec) string {
 	title := "Settings"
-	subtitle := "Saved settings seed the app for future launches. Environment variables still override them."
+	subtitle := "These saved values fill in the app the next time it starts. Environment variables can still override them."
+	badges := []string{
+		m.styles.badgeStrong.Render("saved config"),
+		m.styles.badge.Render("env vars still win"),
+	}
 	if m.onboarding {
 		title = "First-Run Setup"
-		subtitle = "Review the defaults, change anything your environment needs, then save to continue into the dashboard."
+		subtitle = "Review the defaults, adjust anything your machine needs, then save to enter the dashboard."
+		badges = []string{
+			m.styles.badgeStrong.Render("onboarding"),
+			m.styles.badge.Render("review"),
+			m.styles.badge.Render("save"),
+			m.styles.badge.Render("continue"),
+		}
 	}
 	lines := []string{
 		m.styles.title.Render(title),
+		m.renderBadgeRow(badges...),
 		m.styles.subtle.Render(subtitle),
 	}
 	if m.settingsForm != nil {
-		lines = append(lines, m.styles.panel.Render(m.settingsForm.View()))
+		lines = append(lines, m.styles.panel.Copy().Width(layout.mainWidth).Render(m.settingsForm.View()))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func (m model) renderDetails() string {
-	lines := []string{m.styles.panelTitle.Render("Details")}
+func (m model) renderDetails(layout layoutSpec) string {
+	panelWidth := layout.sidebarWidth
+	if layout.stackSidebar {
+		panelWidth = layout.mainWidth
+	}
+	contentWidth := m.panelInnerWidth(panelWidth)
+	blocks := []string{}
+	title := "Details"
+
 	switch m.screen {
-	case screenSnapshotPicker, screenDashboard:
+	case screenDashboard:
+		if m.dashboardFocus == 1 {
+			title = "Snapshot details"
+			row := m.snapshotTable.SelectedRow()
+			if len(row) > 0 {
+				blocks = append(blocks,
+					m.renderValueBlock("Snapshot", row[0], contentWidth, m.styles.value),
+					m.renderValueBlock("Updated", row[1], contentWidth, m.styles.value),
+					m.renderValueBlock("Size", row[2], contentWidth, m.styles.value),
+				)
+			}
+			break
+		}
+		title = "Database details"
+		fallthrough
+	case screenSnapshotPicker:
+		title = "Database details"
 		row := m.dbTable.SelectedRow()
 		if len(row) > 0 {
-			lines = append(lines, "Database: "+row[0], "Tables: "+row[1], "Size: "+row[2])
+			blocks = append(blocks,
+				m.renderValueBlock("Database", row[0], contentWidth, m.styles.value),
+				m.renderValueBlock("Tables", row[1], contentWidth, m.styles.value),
+				m.renderValueBlock("Size", row[2], contentWidth, m.styles.value),
+			)
 		}
 	case screenRestorePicker:
+		title = "Snapshot details"
 		row := m.snapshotTable.SelectedRow()
 		if len(row) > 0 {
-			lines = append(lines, "Snapshot: "+row[0], "Updated: "+row[1], "Size: "+row[2])
+			blocks = append(blocks,
+				m.renderValueBlock("Snapshot", row[0], contentWidth, m.styles.value),
+				m.renderValueBlock("Updated", row[1], contentWidth, m.styles.value),
+				m.renderValueBlock("Size", row[2], contentWidth, m.styles.value),
+			)
 			for _, snapshot := range m.snapshots {
 				if snapshot.Name == row[0] {
 					keys := make([]string, 0, len(snapshot.Fields))
@@ -983,46 +1158,57 @@ func (m model) renderDetails() string {
 					}
 					sort.Strings(keys)
 					for _, key := range keys {
-						lines = append(lines, fmt.Sprintf("%s: %s", key, snapshot.Fields[key]))
+						blocks = append(blocks, m.renderValueBlock(prettyLabel(key), snapshot.Fields[key], contentWidth, m.styles.value))
 					}
 					break
 				}
 			}
 		}
 	case screenRunning:
-		lines = append(lines,
-			"Action: "+string(m.confirmState.action),
-			"Target: "+m.confirmState.target,
-			"Elapsed: "+time.Since(m.jobStartedAt).Round(timeSecond).String(),
-			"Status: "+blankFallback(m.jobStatus, "starting"),
+		title = "Job details"
+		blocks = append(blocks,
+			m.renderValueBlock("Action", screenLabelForJob(m.confirmState.action), contentWidth, m.styles.value),
+			m.renderValueBlock("Target", m.confirmState.target, contentWidth, m.styles.value),
+			m.renderValueBlock("Elapsed", time.Since(m.jobStartedAt).Round(timeSecond).String(), contentWidth, m.styles.value),
+			m.renderValueBlock("Status", blankFallback(m.jobStatus, "starting"), contentWidth, m.styles.statusLine),
 		)
 		if len(m.jobSummary) > 0 {
-			lines = append(lines, "")
-			lines = append(lines, m.jobSummary...)
+			blocks = append(blocks, m.renderBulletBlock("Summary", m.jobSummary, contentWidth))
 		}
 	case screenSettings:
-		lines = append(lines,
-			"Config file: "+m.service.Config().ConfigPath,
-			"Host: "+blankFallback(m.service.Config().MySQLHost, "-"),
-			"Socket: "+blankFallback(m.service.Config().MySQLSocket, "-"),
-			"User: "+blankFallback(m.service.Config().MySQLUser, "-"),
-			"Snapshot root: "+m.service.Config().SnapshotRoot,
+		title = "Current config"
+		blocks = append(blocks,
+			m.renderValueBlock("Config file", m.service.Config().ConfigPath, contentWidth, m.styles.code),
+			m.renderValueBlock("Host", blankFallback(m.service.Config().MySQLHost, "-"), contentWidth, m.styles.value),
+			m.renderValueBlock("Socket", blankFallback(m.service.Config().MySQLSocket, "-"), contentWidth, m.styles.code),
+			m.renderValueBlock("User", blankFallback(m.service.Config().MySQLUser, "-"), contentWidth, m.styles.value),
+			m.renderValueBlock("Snapshot root", m.service.Config().SnapshotRoot, contentWidth, m.styles.code),
 		)
 	case screenOnboarding:
-		lines = append(lines,
-			"Config file: "+m.service.Config().ConfigPath,
-			"Step 1: review the defaults",
-			"Step 2: save settings",
-			"Step 3: use the dashboard",
+		title = "Setup guide"
+		blocks = append(blocks,
+			m.renderValueBlock("Config file", m.service.Config().ConfigPath, contentWidth, m.styles.code),
+			m.renderBulletBlock("Next steps", []string{
+				"Review the defaults",
+				"Save settings",
+				"Use the dashboard",
+			}, contentWidth),
 		)
 	}
 	if m.lastErr != nil && m.screen != screenResult {
-		lines = append(lines, "", "Error:", m.lastErr.Error())
+		blocks = append(blocks, m.renderValueBlock("Latest error", m.lastErr.Error(), contentWidth, m.styles.error))
 	}
-	return m.styles.panel.Render(strings.Join(lines, "\n"))
+	if len(blocks) == 0 {
+		blocks = append(blocks, m.styles.subtle.Render("Select a row to see more detail here."))
+	}
+	return m.styles.panel.Copy().Width(panelWidth).Render(lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.styles.panelTitle.Render(title),
+		lipgloss.JoinVertical(lipgloss.Left, blocks...),
+	))
 }
 
-func newDBTable() table.Model {
+func newDBTable(appStyles styles) table.Model {
 	t := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "Database", Width: 26},
@@ -1034,13 +1220,14 @@ func newDBTable() table.Model {
 		table.WithHeight(12),
 	)
 	styles := table.DefaultStyles()
-	styles.Header = styles.Header.Bold(true)
-	styles.Selected = styles.Selected.Bold(true)
+	styles.Header = styles.Header.Foreground(appStyles.subtle.GetForeground()).Bold(true)
+	styles.Cell = styles.Cell.Foreground(appStyles.value.GetForeground())
+	styles.Selected = styles.Selected.Foreground(appStyles.frame.GetBackground()).Background(appStyles.statusRight.GetBackground()).Bold(true)
 	t.SetStyles(styles)
 	return t
 }
 
-func newSnapshotTable() table.Model {
+func newSnapshotTable(appStyles styles) table.Model {
 	t := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "Snapshot", Width: 26},
@@ -1052,10 +1239,222 @@ func newSnapshotTable() table.Model {
 		table.WithHeight(12),
 	)
 	styles := table.DefaultStyles()
-	styles.Header = styles.Header.Bold(true)
-	styles.Selected = styles.Selected.Bold(true)
+	styles.Header = styles.Header.Foreground(appStyles.subtle.GetForeground()).Bold(true)
+	styles.Cell = styles.Cell.Foreground(appStyles.value.GetForeground())
+	styles.Selected = styles.Selected.Foreground(appStyles.frame.GetBackground()).Background(appStyles.statusRight.GetBackground()).Bold(true)
 	t.SetStyles(styles)
 	return t
+}
+
+func (m model) layout() layoutSpec {
+	width := m.width
+	if width == 0 {
+		width = 120
+	}
+	height := m.height
+	if height == 0 {
+		height = 32
+	}
+
+	contentWidth := width - m.styles.frame.GetHorizontalFrameSize()
+	if contentWidth <= 0 {
+		contentWidth = 1
+	}
+	stackSidebar := contentWidth < 120
+	sidebarWidth := 0
+	mainWidth := contentWidth
+	if !stackSidebar {
+		sidebarWidth = clamp(contentWidth/3, 34, 48)
+		mainWidth = max(56, contentWidth-sidebarWidth-1)
+	}
+
+	stackDashboard := mainWidth < 96
+	dashboardPanelWide := mainWidth
+	if !stackDashboard {
+		dashboardPanelWide = max(28, (mainWidth-1)/2)
+	}
+
+	return layoutSpec{
+		contentWidth:       contentWidth,
+		mainWidth:          mainWidth,
+		sidebarWidth:       sidebarWidth,
+		stackSidebar:       stackSidebar,
+		stackDashboard:     stackDashboard,
+		dashboardPanelWide: dashboardPanelWide,
+		bodyHeight:         max(18, height-4),
+	}
+}
+
+func (m model) panelInnerWidth(width int) int {
+	innerWidth := width - m.styles.panel.GetHorizontalFrameSize()
+	if innerWidth <= 0 {
+		return 1
+	}
+	return innerWidth
+}
+
+func applyDBTableLayout(t *table.Model, width int) {
+	t.SetWidth(width)
+	t.SetColumns(dbColumns(width))
+	t.UpdateViewport()
+}
+
+func applySnapshotTableLayout(t *table.Model, width int) {
+	t.SetWidth(width)
+	t.SetColumns(snapshotColumns(width))
+	t.UpdateViewport()
+}
+
+func dbColumns(width int) []table.Column {
+	if width <= 18 {
+		return []table.Column{
+			{Title: "Database", Width: max(4, width-8)},
+			{Title: "Tbl", Width: 2},
+			{Title: "Sz", Width: 4},
+		}
+	}
+	tablesWidth := clamp(width/5, 3, 8)
+	sizeWidth := clamp(width/4, 6, 10)
+	nameWidth := width - tablesWidth - sizeWidth - 2
+	if nameWidth < 8 {
+		nameWidth = 8
+		sizeWidth = max(4, width-nameWidth-tablesWidth-2)
+	}
+	return []table.Column{
+		{Title: "Database", Width: nameWidth},
+		{Title: "Tables", Width: tablesWidth},
+		{Title: "Size", Width: sizeWidth},
+	}
+}
+
+func snapshotColumns(width int) []table.Column {
+	if width <= 22 {
+		return []table.Column{
+			{Title: "Snapshot", Width: max(6, width-11)},
+			{Title: "When", Width: 4},
+			{Title: "Sz", Width: 5},
+		}
+	}
+	updatedWidth := clamp(width/3, 8, 16)
+	sizeWidth := clamp(width/4, 6, 10)
+	nameWidth := width - updatedWidth - sizeWidth - 2
+	if nameWidth < 8 {
+		nameWidth = 8
+		updatedWidth = max(6, width-nameWidth-sizeWidth-2)
+	}
+	return []table.Column{
+		{Title: "Snapshot", Width: nameWidth},
+		{Title: "Updated", Width: updatedWidth},
+		{Title: "Size", Width: sizeWidth},
+	}
+}
+
+func (m model) renderValueBlock(label, value string, width int, valueStyle lipgloss.Style) string {
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.styles.label.Render(label),
+		valueStyle.Render(wrapText(blankFallback(value, "-"), width)),
+	)
+}
+
+func (m model) renderBadgeRow(badges ...string) string {
+	filtered := make([]string, 0, len(badges))
+	for _, badge := range badges {
+		if strings.TrimSpace(badge) == "" {
+			continue
+		}
+		filtered = append(filtered, badge)
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	row := make([]string, 0, len(filtered)*2-1)
+	for i, badge := range filtered {
+		if i > 0 {
+			row = append(row, " ")
+		}
+		row = append(row, badge)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center, row...)
+}
+
+func (m model) renderBulletBlock(label string, items []string, width int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		lines = append(lines, wrapText("- "+item, width))
+	}
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.styles.label.Render(label),
+		m.styles.value.Render(strings.Join(lines, "\n")),
+	)
+}
+
+func (m model) renderTableOrEmpty(tableView string, empty bool, message string) string {
+	if !empty {
+		return tableView
+	}
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.styles.subtle.Render(message),
+		m.styles.subtle.Render("Open doctor if MySQL or the snapshot folders look out of sync."),
+	)
+}
+
+func (m model) mysqlStatusBadge() string {
+	if m.doctor.MySQLReachable {
+		return m.styles.badgeOK.Render("mysql online")
+	}
+	return m.styles.badgeWarn.Render("mysql offline")
+}
+
+func (m model) jobStatusBadge() string {
+	status := blankFallback(m.jobStatus, "starting")
+	switch strings.ToLower(status) {
+	case "done", "completed", "ready", "finished":
+		return m.styles.badgeOK.Render(status)
+	case "failed", "error", "cancelled":
+		return m.styles.badgeError.Render(status)
+	default:
+		return m.styles.badgeWarn.Render(status)
+	}
+}
+
+func (m model) screenLabel() string {
+	switch m.screen {
+	case screenSnapshotPicker:
+		return "choose database"
+	case screenRestorePicker:
+		return "choose snapshot"
+	case screenConfirm:
+		return "confirm"
+	case screenRunning:
+		return "running"
+	case screenResult:
+		return "result"
+	case screenDoctor:
+		return "doctor"
+	case screenSettings:
+		return "settings"
+	case screenOnboarding:
+		return "setup"
+	default:
+		return "dashboard"
+	}
+}
+
+func screenLabelForJob(kind core.JobKind) string {
+	switch kind {
+	case core.JobSnapshot:
+		return "Snapshot"
+	case core.JobRestore:
+		return "Restore"
+	default:
+		return "Job"
+	}
 }
 
 func orderedSummary(summary map[string]string) []string {
@@ -1095,6 +1494,69 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func clamp(value, low, high int) int {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
+}
+
+func truncateMiddle(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 6 {
+		return string(runes[:width])
+	}
+	prefix := (width - 3) / 2
+	suffix := width - 3 - prefix
+	return string(runes[:prefix]) + "..." + string(runes[len(runes)-suffix:])
+}
+
+func wrapText(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	lines := strings.Split(value, "\n")
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		wrapped = append(wrapped, lipgloss.Wrap(line, width, " /_-=:,."))
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+func prettyLabel(value string) string {
+	if value == "" {
+		return "-"
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '_' || r == '-' || r == '.'
+	})
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 func isInteractive() bool {

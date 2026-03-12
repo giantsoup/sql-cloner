@@ -61,6 +61,39 @@ func TestRunningResultTransition(t *testing.T) {
 	}
 }
 
+func TestResponsiveLayoutKeepsPanelsInsideSmallViewport(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenDashboard})
+	m.width = 48
+	m.height = 18
+	m.resize()
+
+	layout := m.layout()
+	if layout.contentWidth > m.width-m.styles.frame.GetHorizontalFrameSize() {
+		t.Fatalf("content width overflowed viewport: got %d", layout.contentWidth)
+	}
+	if m.dbTable.Width() > m.panelInnerWidth(layout.mainWidth) {
+		t.Fatalf("db table wider than panel: got %d want <= %d", m.dbTable.Width(), m.panelInnerWidth(layout.mainWidth))
+	}
+	if !layout.stackSidebar {
+		t.Fatalf("expected sidebar to stack on a narrow viewport")
+	}
+}
+
+func TestResponsiveLayoutKeepsSidebarOnWideViewport(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenDashboard})
+	m.width = 160
+	m.height = 40
+	m.resize()
+
+	layout := m.layout()
+	if layout.stackSidebar {
+		t.Fatalf("expected sidebar layout on a wide viewport")
+	}
+	if layout.mainWidth+layout.sidebarWidth+1 > layout.contentWidth {
+		t.Fatalf("layout columns overflowed content width: main=%d sidebar=%d content=%d", layout.mainWidth, layout.sidebarWidth, layout.contentWidth)
+	}
+}
+
 func testService(t *testing.T) *core.Service {
 	t.Helper()
 	cfg := core.Config{
