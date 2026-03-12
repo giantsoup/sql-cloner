@@ -1,2 +1,148 @@
-# sql-cloner
-Create, Manage, and Restore SQL snapshots during local development.
+# `dbgold`: Standalone Go TUI for Local MySQL Golden Snapshots
+
+## Summary
+- Build a standalone Go repo that produces one binary named `dbgold`.
+- Use current stable Charm v2 libraries, validated against Charm’s current docs: Bubble Tea v2, Bubbles v2, Lip Gloss v2, and Huh v2. Use `charmbracelet/log` for non-TUI logging.
+- Default UX is dashboard-first: running `dbgold` opens a full-screen TUI. Subcommands remain available for fast direct use.
+- Preserve the current operational assumptions and compatibility surface: local MySQL, Homebrew `mysql@8.0`, one snapshot per database, existing snapshot directory layout, existing `snapshot.info` metadata, and existing environment-variable behavior.
+- Implement the tool as an orchestrator around `mysql`, `mysqladmin`, `mysqlsh`, and `brew` via `os/exec`; do not reimplement dump/load logic with a Go MySQL driver.
+
+## Public CLI and Runtime Behavior
+- Root command: `dbgold`
+- Default behavior: `dbgold` opens the TUI dashboard in alt-screen mode.
+- Direct commands:
+  - `dbgold snapshot [db]`
+  - `dbgold restore [db]`
+  - `dbgold list dbs`
+  - `dbgold list snapshots`
+  - `dbgold doctor`
+  - `dbgold completion zsh`
+- Global flags:
+  - `--yes` to skip confirmations for destructive or service-start actions
+  - `--no-tui` to force plain terminal output even in an interactive shell
+  - `--debug` to enable verbose structured logs
+- Positional database handling:
+  - exact database/snapshot name runs immediately
+  - missing name opens the relevant picker
+  - partial non-exact name opens the picker prefiltered to the typed value
+  - non-interactive mode requires an exact name and exits clearly otherwise
+- Backward compatibility:
+  - reuse `/opt/homebrew/var/db_snapshots/mysqlsh/<db>`
+  - reuse `snapshot.info`
+  - reuse `_logs/<db>.snapshot.log` and `_logs/<db>.restore.log`
+  - preserve the current env-var contract and semantics from the shell scripts with no renames in v1
+- Core safety behavior:
+  - snapshot writes to a temp dump dir and only replaces the existing snapshot after success
+  - restore validates the dump before any drop
+  - restore auto-enables `GLOBAL local_infile` when needed, then restores its prior value
+  - local MySQL reachability is checked before action; if down, prompt to start `mysql@8.0`
+  - default auth remains local `root` with empty password unless login-path or explicit password env is configured
+
+## TUI Design and Interaction
+- Use Bubble Tea v2 for the application shell and screen state machine.
+- Use Bubbles `table` for both live database selection and snapshot selection so metadata appears in explicit columns instead of inline strings.
+- Use a small filter input above the focused table for fuzzy narrowing; filter updates the visible rows in place.
+- Use Bubbles `help` for persistent key hints and `viewport` for live log/output streaming.
+- Use Bubbles `spinner` plus an app-managed elapsed timer for running jobs.
+- Use Huh embedded forms for confirmations and any destructive-action prompts so confirmations stay consistent inside the TUI.
+- Use Lip Gloss v2 for a deliberate, high-contrast layout:
+  - top status bar with MySQL state, snapshot root, and current mode
+  - center workspace with table or job viewport
+  - right-side detail panel showing selected DB/snapshot metadata
+  - bottom help bar with context-specific keys
+- Keybindings:
+  - `j/k` and arrows move selection
+  - `/` focuses filter
+  - `enter` selects or confirms
+  - `esc` backs out of the current panel or clears filter
+  - `r` refreshes the current list
+  - `s` starts snapshot flow from dashboard
+  - `R` starts restore flow from dashboard
+  - `q` quits from non-running screens
+  - `ctrl+c` cancels running work only after a confirmation screen
+- Screen set:
+  - dashboard
+  - snapshot picker
+  - restore picker
+  - confirmation modal/form
+  - running job screen
+  - result screen
+  - doctor screen
+- Running job screen behavior:
+  - show action title, target DB, active settings, elapsed time, and latest parsed status
+  - stream `mysqlsh` output live into a scrollable viewport and mirror it to the log file
+  - show final summary metrics from `mysqlsh` output when present
+
+## Implementation Plan
+- Repo shape:
+  - `cmd/dbgold` for entrypoint
+  - `internal/app` for root Bubble Tea program and screen routing
+  - `internal/core` for config, validation, metadata, and action orchestration
+  - `internal/execx` for process execution, output streaming, and cancellation
+- Command layer:
+  - use Cobra for root/subcommands/help/completion
+  - all subcommands call the same service layer used by the TUI
+  - `dbgold` with no subcommand launches the TUI; subcommands can run with or without TUI depending on flags/TTY
+- Service layer responsibilities:
+  - load config from env with current defaults
+  - discover live DBs from `information_schema`, excluding system schemas
+  - discover snapshots from the snapshot root, excluding `_logs` and temp dirs
+  - parse and write `snapshot.info`
+  - build exact `mysql`, `mysqladmin`, `mysqlsh`, and `brew` argument lists
+  - manage temp files for the MySQL Shell JS snippets
+  - manage service-start prompts and wait loops
+  - manage `local_infile` preflight and restoration
+- `mysqlsh` integration:
+  - keep the current JS-driven `util.dumpSchemas()` and `util.loadDump()` approach
+  - generate temporary JS files at runtime to avoid shell-quoting issues
+  - preserve current defaults for threads, compression, chunk sizing, deferred indexes, and binlog handling
+- Logging:
+  - use `charmbracelet/log` for plain CLI output and debug logging
+  - write persistent run logs exactly as today under `_logs`
+  - keep TUI rendering separate from logger output so background processes do not corrupt the screen
+- Error model:
+  - user-facing errors should be short, action-oriented, and mapped to the current screen
+  - debug mode includes command details and stderr context
+  - restore must fail before dropping the DB for any preflight issue
+- Installation and shell integration:
+  - standalone repo with `go.mod` pinned to Go 1.24
+  - build a single binary and recommend symlink or alias into `~/scripts`
+  - generate zsh completion from Cobra; retire the custom zsh completion function after migration
+  - optional compatibility aliases can map `dbsnap` to `dbgold snapshot` and `dbrestore` to `dbgold restore`
+
+## Test Plan
+- Unit tests:
+  - config loading and default resolution
+  - DB name validation
+  - snapshot metadata parsing/writing
+  - command-argument builders for `mysql`, `mysqladmin`, `mysqlsh`, and `brew`
+  - snapshot discovery and live DB discovery row formatting
+  - `local_infile` preflight state handling
+- Service tests with a fake exec runner:
+  - MySQL already up
+  - MySQL down then started successfully
+  - MySQL down and start declined
+  - snapshot success replacing an existing snapshot only after temp success
+  - snapshot failure leaving the previous snapshot untouched
+  - restore invalid snapshot failing before drop
+  - restore with `local_infile=OFF` enabling it, restoring, and resetting it
+  - restore failure still attempting best-effort `local_infile` reset
+- TUI model tests:
+  - dashboard navigation
+  - filter behavior in both tables
+  - confirm/cancel flows
+  - running-job state transitions
+  - result/error screen transitions
+- Manual acceptance:
+  - existing snapshots created by the shell scripts are visible and restorable in `dbgold`
+  - `dbgold` dashboard is usable entirely from keyboard
+  - `dbgold snapshot <db>` and `dbgold restore <db>` work without opening the full dashboard when `--no-tui` is used
+  - zsh completion works from `dbgold completion zsh`
+  - local root/no-password flow never prompts visibly unless auth actually fails
+
+## Assumptions and Defaults
+- The app remains local-only in v1; no remote hosts, SSH, or multi-instance management.
+- One snapshot per database remains the model in v1; taking a new snapshot replaces the old one after a successful temp dump.
+- No config file in v1; env vars remain the only persistent configuration surface.
+- The binary should operate against the same snapshot/log directories already on disk, so no migration step is required.
+- Go is not currently installed on this machine, so implementation will require installing a current Go toolchain first.
