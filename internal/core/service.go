@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/log"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/taylor/dbgold/internal/execx"
 )
@@ -317,6 +319,7 @@ func (s *Service) RunRestore(ctx context.Context, db string, options RunOptions,
 
 func StreamHandlerFor(logFile *os.File, sink OutputSink, summary map[string]string) execx.StreamHandler {
 	writeLine := func(prefix, line string) {
+		line = sanitizeOutputLine(line)
 		if line == "" {
 			return
 		}
@@ -336,6 +339,21 @@ func StreamHandlerFor(logFile *os.File, sink OutputSink, summary map[string]stri
 		Stdout: func(line string) { writeLine("stdout_", line) },
 		Stderr: func(line string) { writeLine("stderr_", line) },
 	}
+}
+
+func sanitizeOutputLine(line string) string {
+	line = ansi.Strip(line)
+	line = strings.ReplaceAll(line, "\t", "    ")
+	line = strings.Map(func(r rune) rune {
+		if r == '\n' {
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, line)
+	return strings.TrimRight(line, " ")
 }
 
 func (s *Service) localInfileOn(ctx context.Context) (bool, error) {

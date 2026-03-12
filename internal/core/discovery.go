@@ -93,13 +93,13 @@ func DirSize(root string) (int64, error) {
 
 func (s *Service) DiscoverDatabases(ctx context.Context) ([]Database, error) {
 	query := strings.Join([]string{
-		"SELECT SCHEMA_NAME,",
+		"SELECT TABLE_SCHEMA,",
 		"COALESCE(SUM(TABLE_ROWS), 0),",
 		"COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0)",
 		"FROM information_schema.TABLES",
 		"WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sys')",
-		"GROUP BY SCHEMA_NAME",
-		"ORDER BY SCHEMA_NAME",
+		"GROUP BY TABLE_SCHEMA",
+		"ORDER BY TABLE_SCHEMA",
 	}, " ")
 
 	result, err := s.runner.Run(ctx, s.mysqlCommand("-N", "-B", "-e", query))

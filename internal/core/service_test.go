@@ -284,6 +284,29 @@ func TestRunRestoreFailureStillResetsLocalInfile(t *testing.T) {
 	}
 }
 
+func TestStreamHandlerSanitizesControlSequences(t *testing.T) {
+	var gotLines []string
+	sink := collectSink{
+		status: func(line string) { gotLines = append(gotLines, "status:"+line) },
+		log:    func(line string) { gotLines = append(gotLines, "log:"+line) },
+	}
+	summary := map[string]string{}
+
+	handler := StreamHandlerFor(nil, sink, summary)
+	handler.Stdout("\x1b[32m100%\x1b[0m rows\rprogress")
+	handler.Stdout("plain output")
+
+	if len(gotLines) < 4 {
+		t.Fatalf("expected sanitized output callbacks, got %#v", gotLines)
+	}
+	if gotLines[0] != "log:100% rowsprogress" || gotLines[1] != "status:100% rowsprogress" {
+		t.Fatalf("unexpected sanitized control output: %#v", gotLines)
+	}
+	if summary["stdout_01"] != "100% rowsprogress" {
+		t.Fatalf("unexpected summary contents: %#v", summary)
+	}
+}
+
 type fakeRunner struct {
 	runFunc    func(context.Context, execx.Command) (execx.Result, error)
 	streamFunc func(context.Context, execx.Command, execx.StreamHandler) (execx.Result, error)
@@ -407,3 +430,20 @@ type sinkRecorder struct{}
 
 func (sinkRecorder) Status(string)  {}
 func (sinkRecorder) LogLine(string) {}
+
+type collectSink struct {
+	status func(string)
+	log    func(string)
+}
+
+func (s collectSink) Status(value string) {
+	if s.status != nil {
+		s.status(value)
+	}
+}
+
+func (s collectSink) LogLine(value string) {
+	if s.log != nil {
+		s.log(value)
+	}
+}
