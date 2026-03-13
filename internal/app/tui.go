@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"sort"
 	"strconv"
@@ -223,6 +224,14 @@ func newModel(ctx context.Context, svc *core.Service, opts launchOptions) model 
 	filter := textinput.New()
 	filter.Prompt = "find> "
 	filter.Placeholder = "Type to narrow the list"
+	filterStyles := textinput.DefaultDarkStyles()
+	filterStyles.Focused.Prompt = styles.titleAccent
+	filterStyles.Focused.Text = styles.value
+	filterStyles.Focused.Placeholder = styles.subtle
+	filterStyles.Blurred.Prompt = styles.subtle
+	filterStyles.Blurred.Text = styles.value
+	filterStyles.Blurred.Placeholder = styles.subtle
+	filter.SetStyles(filterStyles)
 
 	dbTable := newDBTable(styles)
 	snapshotTable := newSnapshotTable(styles)
@@ -231,6 +240,7 @@ func newModel(ctx context.Context, svc *core.Service, opts launchOptions) model 
 	logViewport.FillHeight = true
 
 	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	spin.Style = styles.titleAccent
 
 	m := model{
 		ctx:           ctx,
@@ -247,6 +257,13 @@ func newModel(ctx context.Context, svc *core.Service, opts launchOptions) model 
 		initialQuery:  opts.initialQuery,
 		initialYes:    opts.yes,
 	}
+	m.help.Styles.ShortKey = styles.titleAccent
+	m.help.Styles.ShortDesc = styles.subtle
+	m.help.Styles.ShortSeparator = styles.subtle
+	m.help.Styles.Ellipsis = styles.subtle
+	m.help.Styles.FullKey = styles.titleAccent
+	m.help.Styles.FullDesc = styles.subtle
+	m.help.Styles.FullSeparator = styles.subtle
 
 	if opts.initialQuery != "" {
 		m.filter.SetValue(opts.initialQuery)
@@ -631,7 +648,7 @@ func (m *model) openSettings(onboarding bool) tea.Cmd {
 		return settingsSavedMsg{cfg: m.service.Config()}
 	}
 	form.WithShowHelp(false)
-	form.WithTheme(huh.ThemeFunc(huh.ThemeCharm))
+	form.WithTheme(newFormTheme(m.styles))
 	m.settingsForm = form
 	if onboarding {
 		m.screen = screenOnboarding
@@ -875,25 +892,32 @@ func (m model) render() string {
 }
 
 func (m model) renderStatus(layout layoutSpec) string {
-	mysqlState := "offline"
-	if m.doctor.MySQLReachable {
-		mysqlState = "online"
-	}
-	left := m.styles.statusLeft.Render("mysql " + mysqlState)
-	right := m.styles.statusRight.Render(m.screenLabel())
-	leftWidth := lipgloss.Width(left)
-	rightWidth := lipgloss.Width(right)
-	if leftWidth+rightWidth+8 > layout.contentWidth {
-		pathWidth := max(1, layout.contentWidth-2)
-		return lipgloss.JoinVertical(
-			lipgloss.Left,
-			boundedRendered(lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right), layout.contentWidth, m.styles.statusMiddle),
-			boundedRendered(m.styles.statusMiddle.Render(truncateMiddle(m.service.SnapshotRoot(), max(1, pathWidth))), layout.contentWidth, m.styles.statusMiddle),
-		)
-	}
-	middleWidth := max(1, layout.contentWidth-leftWidth-rightWidth)
-	middle := m.styles.statusMiddle.Width(middleWidth).Render(truncateMiddle(m.service.SnapshotRoot(), max(1, middleWidth-2)))
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, middle, right)
+	cardStyle := m.styles.statusCard.Copy().Width(layout.contentWidth)
+	bodyWidth := max(1, layout.contentWidth-cardStyle.GetHorizontalFrameSize())
+	fill := styleWithBackground(m.styles.statusPath, cardStyle.GetBackground())
+	titleFill := styleWithBackground(m.styles.heroTitle, cardStyle.GetBackground())
+	title := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		styleWithBackground(m.styles.heroEyebrow, cardStyle.GetBackground()).Render("dbgold"),
+		" ",
+		titleFill.Render(prettyLabel(string(m.screen))),
+	)
+	path := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		styleWithBackground(m.styles.statusLabel, cardStyle.GetBackground()).Render("Workspace"),
+		" ",
+		fill.Render(truncateMiddle(m.service.SnapshotRoot(), max(12, bodyWidth-11))),
+	)
+	return cardStyle.Render(lipgloss.JoinVertical(
+		lipgloss.Left,
+		boundedRendered(title, bodyWidth, titleFill),
+		m.renderBadgeBlockWithFill(bodyWidth, fill,
+			m.mysqlStatusBadge(),
+			m.styles.badgeStrong.Render(prettyLabel(string(m.screen))),
+			m.styles.badgeGhost.Render("tab switches focus"),
+		),
+		boundedRendered(path, bodyWidth, fill),
+	))
 }
 
 func (m model) renderCenter(layout layoutSpec) string {
@@ -921,25 +945,46 @@ func (m model) renderCenter(layout layoutSpec) string {
 	}
 }
 
-func (m model) renderDashboard(layout layoutSpec) string {
-	width := layout.mainWidth
-	title := lipgloss.JoinHorizontal(
-		lipgloss.Center,
-		m.styles.title.Render("dbgold"),
-		" ",
-		m.styles.titleAccent.Render("Dashboard"),
-	)
-	lead := m.styles.subtle.Render("Fast local MySQL snapshots and restores, without shell scripts.")
-	if m.service.Config().NeedsOnboarding() {
-		lead = m.styles.error.Render("Setup is not saved yet. Press c to finish first-run setup.")
+func (m model) renderHeadlineCard(width int, eyebrow, title, subtitle string, badges ...string) string {
+	cardStyle := m.styles.hero.Copy().Width(width)
+	bodyWidth := max(1, width-cardStyle.GetHorizontalFrameSize())
+	fill := styleWithBackground(m.styles.heroSubtitle, cardStyle.GetBackground())
+	eyebrowStyle := styleWithBackground(m.styles.heroEyebrow, cardStyle.GetBackground())
+	titleStyle := styleWithBackground(m.styles.heroTitle, cardStyle.GetBackground())
+	lines := []string{
+		boundedRendered(eyebrowStyle.Render(eyebrow), bodyWidth, eyebrowStyle),
+		boundedRendered(titleStyle.Render(title), bodyWidth, titleStyle),
 	}
-	summary := m.renderBadgeBlock(width,
-		m.styles.badgeStrong.Render(fmt.Sprintf("%d databases", len(m.dbs))),
-		m.styles.badge.Render(fmt.Sprintf("%d snapshots", len(m.snapshots))),
-		m.mysqlStatusBadge(),
-		m.styles.badge.Render("tab to switch"),
-	)
+	if strings.TrimSpace(subtitle) != "" {
+		lines = append(lines, boundedRendered(fill.Render(wrapText(subtitle, bodyWidth)), bodyWidth, fill))
+	}
+	if badgeBlock := m.renderBadgeBlockWithFill(bodyWidth, fill, badges...); badgeBlock != "" {
+		lines = append(lines, badgeBlock)
+	}
+	return cardStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
 
+func (m model) renderSectionCard(width int, title, subtitle, body string, active bool) string {
+	cardStyle := m.styles.panel
+	if active {
+		cardStyle = m.styles.panelActive
+	}
+	cardStyle = cardStyle.Copy().Width(width)
+	bodyWidth := max(1, width-cardStyle.GetHorizontalFrameSize())
+	fill := styleWithBackground(m.styles.panelSubtitle, cardStyle.GetBackground())
+	titleStyle := styleWithBackground(m.styles.panelTitle, cardStyle.GetBackground())
+	header := boundedRendered(titleStyle.Render(title), bodyWidth, titleStyle)
+	lines := []string{header}
+	if strings.TrimSpace(subtitle) != "" {
+		lines = append(lines, boundedRendered(fill.Render(wrapText(subtitle, bodyWidth)), bodyWidth, fill))
+	}
+	if strings.TrimSpace(body) != "" {
+		lines = append(lines, body)
+	}
+	return cardStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+func (m model) renderDashboard(layout layoutSpec) string {
 	dbTable := m.dbTable
 	applyDBTableLayout(&dbTable, m.panelInnerWidth(layout.dashboardPanelWide))
 	dbTable.SetHeight(max(6, layout.bodyHeight-12))
@@ -948,26 +993,43 @@ func (m model) renderDashboard(layout layoutSpec) string {
 	applySnapshotTableLayout(&snapshotTable, m.panelInnerWidth(layout.dashboardPanelWide))
 	snapshotTable.SetHeight(max(6, layout.bodyHeight-12))
 
-	dbPanelStyle := m.styles.panel
-	snapshotPanelStyle := m.styles.panel
-	if m.dashboardFocus == 0 {
-		dbPanelStyle = m.styles.panelActive
-	} else {
-		snapshotPanelStyle = m.styles.panelActive
+	dbInnerWidth := m.panelInnerWidth(layout.dashboardPanelWide)
+	snapshotInnerWidth := m.panelInnerWidth(layout.dashboardPanelWide)
+	dbBody := []string{
+		m.renderBadgeBlockWithFill(dbInnerWidth, styleWithBackground(m.styles.subtle, m.styles.panel.GetBackground()),
+			m.styles.badgeStrong.Render(fmt.Sprintf("%d live databases", len(dbTable.Rows()))),
+		),
+		m.renderTableOrEmpty(dbTable.View(), len(dbTable.Rows()) == 0, "No databases found. Press r to reload or open doctor.", dbInnerWidth),
 	}
-
-	dbPanel := dbPanelStyle.Copy().Width(layout.dashboardPanelWide).Render(lipgloss.JoinVertical(
-		lipgloss.Left,
-		boundedRendered(m.styles.panelTitle.Render("Live databases"), m.panelInnerWidth(layout.dashboardPanelWide), m.styles.panelTitle),
-		boundedRendered(m.styles.subtle.Render("Choose a database to capture from your local MySQL instance."), m.panelInnerWidth(layout.dashboardPanelWide), m.styles.subtle),
-		m.renderTableOrEmpty(dbTable.View(), len(dbTable.Rows()) == 0, "No databases found. Press r to reload or open doctor.", m.panelInnerWidth(layout.dashboardPanelWide)),
-	))
-	snapshotPanel := snapshotPanelStyle.Copy().Width(layout.dashboardPanelWide).Render(lipgloss.JoinVertical(
-		lipgloss.Left,
-		boundedRendered(m.styles.panelTitle.Render("Snapshots"), m.panelInnerWidth(layout.dashboardPanelWide), m.styles.panelTitle),
-		boundedRendered(m.styles.subtle.Render("Choose a saved dump to restore into local MySQL."), m.panelInnerWidth(layout.dashboardPanelWide), m.styles.subtle),
-		m.renderTableOrEmpty(snapshotTable.View(), len(snapshotTable.Rows()) == 0, "No snapshots yet. Press s to create the first one.", m.panelInnerWidth(layout.dashboardPanelWide)),
-	))
+	if m.service.Config().NeedsOnboarding() {
+		dbBody = append([]string{
+			boundedRendered(
+				styleWithBackground(m.styles.error, m.styles.panel.GetBackground()).Render("Setup is not saved yet. Press c to finish first-run setup."),
+				dbInnerWidth,
+				styleWithBackground(m.styles.error, m.styles.panel.GetBackground()),
+			),
+		}, dbBody...)
+	}
+	dbPanel := m.renderSectionCard(
+		layout.dashboardPanelWide,
+		"Live databases",
+		"Capture from the MySQL instance running on this machine.",
+		lipgloss.JoinVertical(lipgloss.Left, dbBody...),
+		m.dashboardFocus == 0,
+	)
+	snapshotPanel := m.renderSectionCard(
+		layout.dashboardPanelWide,
+		"Snapshots",
+		"Restore from an existing MySQL Shell dump on disk.",
+		lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.renderBadgeBlockWithFill(snapshotInnerWidth, styleWithBackground(m.styles.subtle, m.styles.panel.GetBackground()),
+				m.styles.badgeStrong.Render(fmt.Sprintf("%d saved snapshots", len(snapshotTable.Rows()))),
+			),
+			m.renderTableOrEmpty(snapshotTable.View(), len(snapshotTable.Rows()) == 0, "No snapshots yet. Press s to create the first one.", snapshotInnerWidth),
+		),
+		m.dashboardFocus == 1,
+	)
 
 	var body string
 	if layout.stackDashboard {
@@ -978,9 +1040,6 @@ func (m model) renderDashboard(layout layoutSpec) string {
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		boundedRendered(title, width, m.styles.title),
-		summary,
-		boundedRendered(lead, width, m.styles.subtle),
 		body,
 	)
 }
@@ -995,7 +1054,16 @@ func (m model) renderFooter(layout layoutSpec) string {
 	case screenConfirm:
 		helpView = "Enter confirms. Tab or left/right switches between Yes and No. Esc cancels."
 	}
-	return m.styles.helpBar.Copy().Width(layout.contentWidth).Render(wrapText(helpView, max(1, layout.contentWidth-m.styles.helpBar.GetHorizontalFrameSize())))
+	barStyle := m.styles.helpBar.Copy().Width(layout.contentWidth)
+	bodyWidth := max(1, layout.contentWidth-barStyle.GetHorizontalFrameSize())
+	fill := styleWithBackground(m.styles.subtle, barStyle.GetBackground())
+	content := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		styleWithBackground(m.styles.helpLabel, barStyle.GetBackground()).Render("Keys"),
+		" ",
+		fill.Render(wrapText(helpView, max(1, bodyWidth-5))),
+	)
+	return barStyle.Render(boundedRendered(content, bodyWidth, fill))
 }
 
 func (m model) renderPicker(layout layoutSpec, title, subtitle, filterView, tableView string) string {
@@ -1015,13 +1083,24 @@ func (m model) renderPicker(layout layoutSpec, title, subtitle, filterView, tabl
 	if filterValue != "" {
 		badges = append(badges, m.styles.badgeWarn.Render("filter: "+filterValue))
 	}
+	filterCard := m.renderSectionCard(
+		layout.mainWidth,
+		"Filter",
+		"Fuzzy match by database or snapshot name.",
+		boundedRendered(m.styles.filter.Render(filterView), m.panelInnerWidth(layout.mainWidth), styleWithBackground(m.styles.filter, m.styles.panel.GetBackground())),
+		m.filter.Focused(),
+	)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		boundedRendered(m.styles.title.Render(title), width, m.styles.title),
-		m.renderBadgeBlock(width, badges...),
-		boundedRendered(m.styles.subtle.Render(subtitle), width, m.styles.subtle),
-		boundedRendered(m.styles.filter.Render(filterView), width, m.styles.filter),
-		m.styles.panel.Copy().Width(layout.mainWidth).Render(m.renderTableOrEmpty(tableView, count == 0, emptyText, m.panelInnerWidth(layout.mainWidth))),
+		m.renderHeadlineCard(width, "Workflow", title, subtitle, badges...),
+		filterCard,
+		m.renderSectionCard(
+			layout.mainWidth,
+			title,
+			"Press enter to continue with the selected row.",
+			m.renderTableOrEmpty(tableView, count == 0, emptyText, m.panelInnerWidth(layout.mainWidth)),
+			true,
+		),
 	)
 }
 
@@ -1032,25 +1111,22 @@ func (m model) renderRunning(layout layoutSpec) string {
 		title = fmt.Sprintf("%s %s", m.spin.View(), screenLabelForJob(m.lastResult.Kind))
 	}
 	elapsed := time.Since(m.jobStartedAt).Round(timeSecond)
-	metrics := m.renderBadgeBlock(width,
+	badges := []string{
 		m.styles.badgeStrong.Render(screenLabelForJob(m.confirmState.action)),
-		m.styles.badge.Render("target "+blankFallback(m.confirmState.target, "-")),
-		m.styles.badge.Render("elapsed "+elapsed.String()),
+		m.styles.badge.Render("target " + blankFallback(m.confirmState.target, "-")),
+		m.styles.badge.Render("elapsed " + elapsed.String()),
 		m.jobStatusBadge(),
-	)
-	header := lipgloss.JoinVertical(lipgloss.Left,
-		boundedRendered(m.styles.title.Render(title), width, m.styles.title),
-		metrics,
-		boundedRendered(m.styles.subtle.Render("Streaming mysqlsh output in real time."), width, m.styles.subtle),
-	)
+	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		header,
-		m.styles.panel.Copy().Width(layout.mainWidth).Render(lipgloss.JoinVertical(
-			lipgloss.Left,
-			boundedRendered(m.styles.panelTitle.Render("Job log"), m.panelInnerWidth(layout.mainWidth), m.styles.panelTitle),
+		m.renderHeadlineCard(width, "Progress", title, "Streaming mysqlsh output in real time.", badges...),
+		m.renderSectionCard(
+			layout.mainWidth,
+			"Job log",
+			"Latest output from mysqlsh and supporting commands.",
 			m.logViewport.View(),
-		)),
+			true,
+		),
 	)
 }
 
@@ -1071,14 +1147,14 @@ func (m model) renderLogContent(width int) string {
 func (m model) renderConfirm(layout layoutSpec) string {
 	modalWidth := clamp(layout.mainWidth-8, 36, min(72, layout.mainWidth))
 	bodyWidth := max(1, modalWidth-m.styles.modal.GetHorizontalFrameSize())
-	title := boundedRendered(m.styles.titleAccent.Render(m.confirmState.reason), bodyWidth, m.styles.titleAccent)
+	title := boundedRendered(m.styles.heroTitle.Render(m.confirmState.reason), bodyWidth, m.styles.heroTitle)
 	description := boundedRendered(m.styles.value.Render(wrapText(m.confirmState.description, bodyWidth)), bodyWidth, m.styles.value)
 	help := boundedRendered(m.styles.subtle.Render("Enter confirms. Tab or left/right switches. Esc cancels."), bodyWidth, m.styles.subtle)
 
 	yesStyle := m.styles.badgeOK
-	noStyle := m.styles.badge
+	noStyle := m.styles.badgeGhost
 	if !m.confirmValue {
-		yesStyle = m.styles.badge
+		yesStyle = m.styles.badgeGhost
 		noStyle = m.styles.badgeError
 	}
 	actions := lipgloss.JoinHorizontal(
@@ -1106,9 +1182,7 @@ func (m model) renderResult(layout layoutSpec) string {
 		title = "Error"
 		statusBadge = m.styles.badgeError.Render("failed")
 	}
-	lines := []string{
-		m.renderBadgeBlock(width, lipgloss.JoinHorizontal(lipgloss.Center, m.styles.title.Render(title), " ", statusBadge)),
-	}
+	lines := []string{}
 	if m.lastErr != nil {
 		lines = append(lines, m.renderValueBlock("Latest error", m.lastErr.Error(), width, m.styles.error))
 	} else if m.lastResult != nil {
@@ -1118,24 +1192,16 @@ func (m model) renderResult(layout layoutSpec) string {
 			lines = append(lines, m.renderBulletBlock("Summary", m.jobSummary, width))
 		}
 	}
-	return m.styles.panel.Copy().Width(layout.mainWidth).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.renderHeadlineCard(layout.mainWidth, "Run complete", title, "Review the final outcome, the persistent log path, and any summary emitted by mysqlsh.", statusBadge),
+		m.renderSectionCard(layout.mainWidth, "Outcome", "Everything from the latest run is captured here.", lipgloss.JoinVertical(lipgloss.Left, lines...), true),
+	)
 }
 
 func (m model) renderDoctor(layout layoutSpec) string {
 	width := m.panelInnerWidth(layout.mainWidth)
 	blocks := []string{
-		m.renderBadgeBlock(width,
-			lipgloss.JoinHorizontal(
-				lipgloss.Center,
-				m.styles.title.Render("Doctor"),
-				" ",
-				m.mysqlStatusBadge(),
-			),
-		),
-		m.renderBadgeBlock(width,
-			m.styles.badge.Render(fmt.Sprintf("%d missing tools", len(m.doctor.MissingCommands))),
-			m.styles.badge.Render(fmt.Sprintf("%d warnings", len(m.doctor.Warnings))),
-		),
 		m.renderValueBlock("MySQL reachable", fmt.Sprintf("%t", m.doctor.MySQLReachable), width, m.styles.value),
 		m.renderValueBlock("MySQL service", blankFallback(m.doctor.MySQLService, "-"), width, m.styles.value),
 		m.renderValueBlock("MySQL socket", blankFallback(m.doctor.MySQLSocket, "-"), width, m.styles.code),
@@ -1149,7 +1215,19 @@ func (m model) renderDoctor(layout layoutSpec) string {
 	if len(m.doctor.Warnings) > 0 {
 		blocks = append(blocks, m.renderBulletBlock("Warnings", m.doctor.Warnings, width))
 	}
-	return m.styles.panel.Copy().Width(layout.mainWidth).Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.renderHeadlineCard(
+			layout.mainWidth,
+			"Diagnostics",
+			"Doctor",
+			"Use this screen to verify tools, paths, and local MySQL connectivity before running jobs.",
+			m.mysqlStatusBadge(),
+			m.styles.badge.Render(fmt.Sprintf("%d missing tools", len(m.doctor.MissingCommands))),
+			m.styles.badge.Render(fmt.Sprintf("%d warnings", len(m.doctor.Warnings))),
+		),
+		m.renderSectionCard(layout.mainWidth, "Environment report", "Current runtime state and detected defaults.", lipgloss.JoinVertical(lipgloss.Left, blocks...), true),
+	)
 }
 
 func (m model) renderSettings(layout layoutSpec) string {
@@ -1170,14 +1248,14 @@ func (m model) renderSettings(layout layoutSpec) string {
 			m.styles.badge.Render("edit if needed"),
 		}
 	}
-	lines := []string{
-		boundedRendered(m.styles.title.Render(title), layout.mainWidth, m.styles.title),
-		m.renderBadgeBlock(layout.mainWidth, badges...),
-		boundedRendered(m.styles.subtle.Render(subtitle), layout.mainWidth, m.styles.subtle),
-	}
+	lines := []string{m.renderHeadlineCard(layout.mainWidth, "Configuration", title, subtitle, badges...)}
 	if m.settingsForm != nil {
-		lines = append(lines, m.styles.panel.Copy().Width(layout.mainWidth).Render(
+		lines = append(lines, m.renderSectionCard(
+			layout.mainWidth,
+			"Saved defaults",
+			"These values seed the app and can still be overridden by environment variables.",
 			boundedRendered(m.settingsForm.View(), m.panelInnerWidth(layout.mainWidth), lipgloss.NewStyle()),
+			true,
 		))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
@@ -1284,11 +1362,17 @@ func (m model) renderDetails(layout layoutSpec) string {
 	if len(blocks) == 0 {
 		blocks = append(blocks, boundedRendered(m.styles.subtle.Render("Select a row to see more detail here."), contentWidth, m.styles.subtle))
 	}
-	return m.styles.panel.Copy().Width(panelWidth).Render(lipgloss.JoinVertical(
-		lipgloss.Left,
-		boundedRendered(m.styles.panelTitle.Render(title), contentWidth, m.styles.panelTitle),
+	subtitle := "Context for the currently selected item."
+	if m.screen == screenOnboarding {
+		subtitle = "What to review before saving setup."
+	}
+	return m.renderSectionCard(
+		panelWidth,
+		title,
+		subtitle,
 		lipgloss.JoinVertical(lipgloss.Left, blocks...),
-	))
+		true,
+	)
 }
 
 func newDBTable(appStyles styles) table.Model {
@@ -1303,9 +1387,17 @@ func newDBTable(appStyles styles) table.Model {
 		table.WithHeight(12),
 	)
 	styles := table.DefaultStyles()
-	styles.Header = lipgloss.NewStyle().Foreground(appStyles.subtle.GetForeground()).Bold(true)
-	styles.Cell = lipgloss.NewStyle().Foreground(appStyles.value.GetForeground())
-	styles.Selected = styles.Selected.Foreground(appStyles.frame.GetBackground()).Background(appStyles.statusRight.GetBackground()).Bold(true)
+	styles.Header = lipgloss.NewStyle().
+		Foreground(appStyles.panelSubtitle.GetForeground()).
+		BorderBottom(true).
+		BorderForeground(appStyles.panel.GetBorderTopForeground()).
+		Bold(true)
+	styles.Cell = lipgloss.NewStyle().
+		Foreground(appStyles.value.GetForeground())
+	styles.Selected = lipgloss.NewStyle().
+		Foreground(appStyles.frame.GetBackground()).
+		Background(appStyles.badgeStrong.GetBackground()).
+		Bold(true)
 	t.SetStyles(styles)
 	return t
 }
@@ -1322,9 +1414,17 @@ func newSnapshotTable(appStyles styles) table.Model {
 		table.WithHeight(12),
 	)
 	styles := table.DefaultStyles()
-	styles.Header = lipgloss.NewStyle().Foreground(appStyles.subtle.GetForeground()).Bold(true)
-	styles.Cell = lipgloss.NewStyle().Foreground(appStyles.value.GetForeground())
-	styles.Selected = styles.Selected.Foreground(appStyles.frame.GetBackground()).Background(appStyles.statusRight.GetBackground()).Bold(true)
+	styles.Header = lipgloss.NewStyle().
+		Foreground(appStyles.panelSubtitle.GetForeground()).
+		BorderBottom(true).
+		BorderForeground(appStyles.panel.GetBorderTopForeground()).
+		Bold(true)
+	styles.Cell = lipgloss.NewStyle().
+		Foreground(appStyles.value.GetForeground())
+	styles.Selected = lipgloss.NewStyle().
+		Foreground(appStyles.frame.GetBackground()).
+		Background(appStyles.badgeStrong.GetBackground()).
+		Bold(true)
 	t.SetStyles(styles)
 	return t
 }
@@ -1364,7 +1464,7 @@ func (m model) layout() layoutSpec {
 		stackSidebar:       stackSidebar,
 		stackDashboard:     stackDashboard,
 		dashboardPanelWide: dashboardPanelWide,
-		bodyHeight:         max(18, height-4),
+		bodyHeight:         max(12, height-10),
 	}
 }
 
@@ -1433,7 +1533,9 @@ func snapshotColumns(width int) []table.Column {
 }
 
 func (m model) renderValueBlock(label, value string, width int, valueStyle lipgloss.Style) string {
-	labelText := m.styles.label.Render(label)
+	fill := styleWithBackground(valueStyle, m.styles.panel.GetBackground())
+	labelStyle := styleWithBackground(m.styles.label, m.styles.panel.GetBackground())
+	labelText := labelStyle.Render(label + ":")
 	valueText := wrapText(blankFallback(value, "-"), max(1, width))
 	inlineWidth := max(1, width-lipgloss.Width(labelText)-1)
 	inlineValue := wrapText(blankFallback(value, "-"), inlineWidth)
@@ -1443,20 +1545,24 @@ func (m model) renderValueBlock(label, value string, width int, valueStyle lipgl
 				lipgloss.Top,
 				labelText,
 				" ",
-				valueStyle.Render(inlineValue),
+				fill.Render(inlineValue),
 			),
 			width,
-			valueStyle,
+			fill,
 		)
 	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		boundedRendered(labelText, width, m.styles.label),
-		boundedRendered(valueStyle.Render(valueText), width, valueStyle),
+		boundedRendered(labelText, width, labelStyle),
+		boundedRendered(fill.Render(valueText), width, fill),
 	)
 }
 
 func (m model) renderBadgeBlock(width int, badges ...string) string {
+	return m.renderBadgeBlockWithFill(width, m.screenFillStyle(), badges...)
+}
+
+func (m model) renderBadgeBlockWithFill(width int, filler lipgloss.Style, badges ...string) string {
 	filtered := make([]string, 0, len(badges))
 	for _, badge := range badges {
 		if strings.TrimSpace(badge) == "" {
@@ -1491,21 +1597,23 @@ func (m model) renderBadgeBlock(width int, badges ...string) string {
 	if len(current) > 0 {
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Center, interleaveSpaces(current)...))
 	}
-	return boundedRendered(strings.Join(rows, "\n"), width, lipgloss.NewStyle())
+	return boundedRendered(strings.Join(rows, "\n"), width, filler)
 }
 
 func (m model) renderBulletBlock(label string, items []string, width int) string {
 	if len(items) == 0 {
 		return ""
 	}
+	labelStyle := styleWithBackground(m.styles.label, m.styles.panel.GetBackground())
+	valueStyle := styleWithBackground(m.styles.value, m.styles.panel.GetBackground())
 	lines := make([]string, 0, len(items))
 	for _, item := range items {
-		lines = append(lines, wrapText("- "+item, width))
+		lines = append(lines, wrapText("• "+item, width))
 	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		boundedRendered(m.styles.label.Render(label), width, m.styles.label),
-		boundedRendered(m.styles.value.Render(strings.Join(lines, "\n")), width, m.styles.value),
+		boundedRendered(labelStyle.Render(label), width, labelStyle),
+		boundedRendered(valueStyle.Render(strings.Join(lines, "\n")), width, valueStyle),
 	)
 }
 
@@ -1513,18 +1621,20 @@ func (m model) renderTableOrEmpty(tableView string, empty bool, message string, 
 	if !empty {
 		return tableView
 	}
+	fill := styleWithBackground(m.styles.subtle, m.styles.panel.GetBackground())
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		boundedRendered(m.styles.subtle.Render(wrapText(message, width)), width, m.styles.subtle),
-		boundedRendered(m.styles.subtle.Render(wrapText("Open doctor if MySQL or the snapshot folders look out of sync.", width)), width, m.styles.subtle),
+		boundedRendered(fill.Render(wrapText(message, width)), width, fill),
+		boundedRendered(fill.Render(wrapText("Open doctor if MySQL or the snapshot folders look out of sync.", width)), width, fill),
+		boundedRendered(fill.Render(wrapText("Press r after external changes to refresh these lists without leaving the app.", width)), width, fill),
 	)
 }
 
 func (m model) mysqlStatusBadge() string {
 	if m.doctor.MySQLReachable {
-		return m.styles.badgeOK.Render("mysql online")
+		return m.styles.badgeOK.Render("MySQL online")
 	}
-	return m.styles.badgeWarn.Render("mysql offline")
+	return m.styles.badgeWarn.Render("MySQL offline")
 }
 
 func (m model) jobStatusBadge() string {
@@ -1630,6 +1740,39 @@ func summarizeErrorBriefly(err error) string {
 	return first
 }
 
+func newFormTheme(appStyles styles) huh.Theme {
+	return huh.ThemeFunc(func(bool) *huh.Styles {
+		theme := huh.ThemeCharm(true)
+		theme.FieldSeparator = lipgloss.NewStyle().SetString("\n")
+		theme.Group.Title = appStyles.panelTitle
+		theme.Group.Description = appStyles.panelSubtitle
+		theme.Focused.Base = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(appStyles.panelActive.GetBorderTopForeground()).
+			Padding(0, 1)
+		theme.Focused.Card = theme.Focused.Base
+		theme.Focused.Title = appStyles.titleAccent
+		theme.Focused.Description = appStyles.subtle
+		theme.Focused.TextInput.Prompt = appStyles.titleAccent
+		theme.Focused.TextInput.Text = appStyles.value
+		theme.Focused.TextInput.Placeholder = appStyles.subtle
+		theme.Focused.FocusedButton = appStyles.badgeStrong
+		theme.Focused.BlurredButton = appStyles.badgeGhost
+		theme.Focused.Next = appStyles.badgeStrong
+		theme.Blurred = theme.Focused
+		theme.Blurred.Base = lipgloss.NewStyle().PaddingLeft(1)
+		theme.Blurred.Card = theme.Blurred.Base
+		theme.Help.ShortKey = appStyles.titleAccent
+		theme.Help.ShortDesc = appStyles.subtle
+		theme.Help.ShortSeparator = appStyles.subtle
+		theme.Help.Ellipsis = appStyles.subtle
+		theme.Help.FullKey = appStyles.titleAccent
+		theme.Help.FullDesc = appStyles.subtle
+		theme.Help.FullSeparator = appStyles.subtle
+		return theme
+	})
+}
+
 func blankFallback(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -1718,7 +1861,6 @@ func renderWrappedBounded(value string, width int, style lipgloss.Style) []strin
 }
 
 func boundedRendered(rendered string, width int, filler lipgloss.Style) string {
-	width = safeWidth(width)
 	if width <= 0 {
 		return rendered
 	}
@@ -1730,7 +1872,6 @@ func boundedRendered(rendered string, width int, filler lipgloss.Style) string {
 }
 
 func boundedBlock(rendered string, width, height int, filler lipgloss.Style) string {
-	width = safeWidth(width)
 	if height <= 0 {
 		return boundedRendered(rendered, width, filler)
 	}
@@ -1748,7 +1889,6 @@ func boundedBlock(rendered string, width, height int, filler lipgloss.Style) str
 }
 
 func boundedLine(line string, width int, filler lipgloss.Style) string {
-	width = safeWidth(width)
 	if width <= 0 {
 		return line
 	}
@@ -1768,6 +1908,10 @@ func safeWidth(width int) int {
 		return width
 	}
 	return width - 1
+}
+
+func styleWithBackground(style lipgloss.Style, background color.Color) lipgloss.Style {
+	return style.Copy().Background(background)
 }
 
 func (m model) screenFillStyle() lipgloss.Style {

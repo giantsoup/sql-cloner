@@ -405,6 +405,15 @@ func TestSafeWidthLeavesOneColumnWhenPossible(t *testing.T) {
 	}
 }
 
+func TestBoundedRenderedUsesProvidedWidthWithoutShrinking(t *testing.T) {
+	m := newModel(context.Background(), testService(t), launchOptions{mode: screenDashboard})
+
+	rendered := boundedRendered("abc", 5, m.styles.value)
+	if got := lipgloss.Width(rendered); got != 5 {
+		t.Fatalf("expected bounded width 5, got %d: %q", got, rendered)
+	}
+}
+
 func TestViewFillsTerminalHeightForShorterScreen(t *testing.T) {
 	m := newModel(context.Background(), testService(t), launchOptions{mode: screenResult})
 	m.width = 140
