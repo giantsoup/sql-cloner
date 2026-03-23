@@ -16,6 +16,18 @@ It is designed as a friendlier replacement for the common `mysqldump` plus "repl
 - Plain CLI subcommands for direct use and scripting
 - Live job log streaming in the TUI and persistent per-database log files under `_logs`
 
+## Screenshots
+
+These README screenshots use dummy data rendered from an isolated docs fixture, so they stay reproducible and never depend on a live local MySQL instance.
+
+![Dashboard view showing live databases, saved snapshots, and snapshot details](docs/screenshots/dashboard.png)
+
+Dashboard view with live databases on the left, saved snapshots on the right, and the details sidebar focused on the selected snapshot.
+
+![Restore picker showing fuzzy filtering and snapshot metadata](docs/screenshots/restore.png)
+
+Restore picker with fuzzy filtering, saved snapshot selection, and snapshot metadata in the details sidebar.
+
 ## Requirements
 
 - Go 1.25.8 or newer to build this repo
@@ -286,6 +298,12 @@ Run the app:
 
 ```bash
 go run ./cmd/dbgold
+```
+
+Regenerate the README screenshots:
+
+```bash
+./hack/generate-readme-screenshots.sh
 ```
 
 Key project directories:
