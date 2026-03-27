@@ -134,6 +134,7 @@ session.runSql('DROP DATABASE IF EXISTS ' + tick + databaseName + tick);
 const options = {
   threads,
   showProgress: true,
+  resetProgress: true,
   deferTableIndexes,
   skipBinlog,
 };

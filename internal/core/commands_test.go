@@ -55,6 +55,9 @@ func TestCommandBuilders(t *testing.T) {
 	if !stringsContains(load, `util.loadDump(snapshotDir, options)`) {
 		t.Fatalf("unexpected load script %q", load)
 	}
+	if !stringsContains(load, `resetProgress: true`) {
+		t.Fatalf("expected load script to reset prior mysqlsh progress %q", load)
+	}
 	if !stringsContains(load, `const skipBinlog = true;`) {
 		t.Fatalf("expected skipBinlog in load script %q", load)
 	}
